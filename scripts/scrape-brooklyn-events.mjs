@@ -21,6 +21,7 @@ const REQUEST_TIMEOUT_MS = Number(getArgValue('--timeout-ms')) || 45000;
 
 const authToken = process.env.FIREBASE_AUTH_TOKEN || '';
 const dryRun = process.argv.includes('--dry-run') || process.env.DRY_RUN === '1';
+const repairDatesOnly = process.argv.includes('--repair-dates-only');
 const limit = Math.min(Math.max(Number(getArgValue('--limit')) || MAX_UPLOAD_EVENTS, 1), MAX_UPLOAD_EVENTS);
 
 function getArgValue(name) {
@@ -173,12 +174,7 @@ function eventDateKey(evt) {
 }
 
 function formatDate(evt) {
-  const details = evt.start_date_details || {};
-  if (details.month && details.day && details.year) return `${details.month}/${details.day}/${details.year}`;
-  const date = eventDateKey(evt);
-  if (!date) return '';
-  const [year, month, day] = date.split('-');
-  return `${month}/${day}/${year}`;
+  return eventDateKey(evt);
 }
 
 function timeLabelFromDetails(details) {
@@ -259,6 +255,14 @@ function imageUrl(evt) {
 
 function normalizeTitleForMatch(value) {
   return decodeEntities(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function normalizeStoredDate(value) {
+  const text = normalize(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const match = text.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!match) return text;
+  return `${match[3]}-${match[1].padStart(2, '0')}-${match[2].padStart(2, '0')}`;
 }
 
 function docIdFromName(name) {
@@ -434,6 +438,33 @@ async function uploadEvent(event) {
   });
 }
 
+async function repairExistingBrooklynDates(eventDocs) {
+  const repairs = eventDocs
+    .filter(doc => normalize(doc.data.eventId || doc.id).startsWith('b_'))
+    .map(doc => ({ id: doc.id, oldDate: normalize(doc.data.date), newDate: normalizeStoredDate(doc.data.date) }))
+    .filter(item => item.oldDate && item.newDate && item.oldDate !== item.newDate);
+
+  if (!repairs.length) {
+    console.log('No existing Brooklyn event date formats need repair.');
+    return [];
+  }
+
+  for (const repair of repairs) {
+    if (dryRun) {
+      console.log(`DRY RUN repair ${repair.id}: ${repair.oldDate} -> ${repair.newDate}`);
+      continue;
+    }
+    await requestJson(firestoreDocumentUrl('events', repair.id), {
+      method: 'PATCH',
+      body: JSON.stringify({ fields: { date: { stringValue: repair.newDate }, updatedAt: { timestampValue: new Date().toISOString() } } }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+    console.log(`Repaired ${repair.id}: ${repair.oldDate} -> ${repair.newDate}`);
+  }
+
+  return repairs;
+}
+
 async function main() {
   console.log(`Reading Brooklyn.edu events (${getArgValue('--input-json') ? path.resolve(getArgValue('--input-json')) : apiUrl(1)})`);
   const [rawEvents, existingEvents, orgDocs] = await Promise.all([
@@ -444,6 +475,16 @@ async function main() {
   const existingIds = buildExistingIdSet(existingEvents);
   const clubTitleSet = buildClubTitleSet(existingEvents);
   const orgMap = buildOrgMap(orgDocs);
+  const repairedDates = await repairExistingBrooklynDates(existingEvents);
+  if (repairDatesOnly) {
+    await fs.mkdir(ARTIFACTS_DIR, { recursive: true });
+    await fs.writeFile(
+      path.join(ARTIFACTS_DIR, 'scrape-brooklyn-summary.json'),
+      JSON.stringify({ dryRun, repairDatesOnly, repairedDates }, null, 2) + '\n',
+      'utf8'
+    );
+    return;
+  }
 
   const candidates = rawEvents
     .filter(evt => evt && evt.id)
