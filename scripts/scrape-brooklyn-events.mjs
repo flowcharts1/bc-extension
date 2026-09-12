@@ -330,41 +330,46 @@ function firestoreFields(data) {
   return Object.fromEntries(Object.entries(data).map(([key, value]) => [key, firestoreValue(value)]));
 }
 
-function findRegisterLinkInHtml(html, baseUrl) {
-  const links = [];
-  const pattern = /<a\b([^>]*)>([\s\S]*?)<\/a>/gi;
-  let match;
-  while ((match = pattern.exec(html)) !== null) {
-    const attrs = match[1] || '';
-    const text = stripHtml(match[2] || '');
-    const hrefMatch = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i);
-    const href = hrefMatch ? hrefMatch[1] : '';
-    if (!href) continue;
-    const label = /ticket/i.test(text) ? 'tickets' : /register|rsvp/i.test(text) ? 'register' : '';
-    if (!label) continue;
-    try {
-      links.push({ label, url: new URL(href, baseUrl).href });
-    } catch (_) {
-      links.push({ label, url: href });
-    }
-  }
-  return links[0] || null;
+function classAttrHas(attrs, className) {
+  const match = String(attrs || '').match(/\bclass\s*=\s*["']([^"']+)["']/i);
+  if (!match) return false;
+  return match[1].split(/\s+/).includes(className);
 }
 
-function findRegisterLinkInDescription(evt) {
-  return findRegisterLinkInHtml(String(evt.description || ''), evt.url || DEFAULT_API_URL);
+function anchorFromHtml(html, baseUrl) {
+  const match = String(html || '').match(/<a\b([^>]*)>([\s\S]*?)<\/a>/i);
+  if (!match) return null;
+  const attrs = match[1] || '';
+  const label = stripHtml(match[2] || '');
+  const hrefMatch = attrs.match(/\bhref\s*=\s*["']([^"']+)["']/i);
+  const href = hrefMatch ? hrefMatch[1] : '';
+  if (!href || !label) return null;
+  try {
+    return { label, url: new URL(href, baseUrl).href };
+  } catch (_) {
+    return { label, url: href };
+  }
+}
+
+function findEventCtaLinkInHtml(html, baseUrl) {
+  const wrapperPattern = /<div\b([^>]*)>([\s\S]*?)<\/div>/gi;
+  let match;
+  while ((match = wrapperPattern.exec(html)) !== null) {
+    if (!classAttrHas(match[1], 'event-cta-wrapper')) continue;
+    const link = anchorFromHtml(match[2], baseUrl);
+    if (link) return link;
+  }
+  return null;
 }
 
 async function findRegisterLink(evt) {
-  const fromDescription = findRegisterLinkInDescription(evt);
-  if (fromDescription) return fromDescription;
-  if (!evt.url || getArgValue('--input-json')) return null;
+  if (!evt.url) return null;
 
   try {
     const html = await requestText(evt.url, { headers: { Accept: 'text/html' } });
-    return findRegisterLinkInHtml(html, evt.url);
+    return findEventCtaLinkInHtml(html, evt.url);
   } catch (err) {
-    console.warn(`Registration link lookup failed for ${evt.id}: ${err.message.split('\n')[0]}`);
+    console.warn(`Event CTA lookup failed for ${evt.id}: ${err.message.split('\n')[0]}`);
     return null;
   }
 }
@@ -420,7 +425,7 @@ async function mergeEvent(evt, orgMap, clubTitleSet) {
     flyerPath: '',
     flyerIcon: eventImageUrl || fallbackIcon,
     flyerIconPath: eventImageUrl ? '' : fallbackIconPath,
-    links: link ? [{ label: link.label, url: link.url }] : [{ label: 'Info', url: evt.url || '' }].filter(item => item.url),
+    links: link ? [{ label: link.label, url: link.url }] : [],
     source: 'brooklyn.edu',
     sourceUrl: evt.url || '',
     archived,
