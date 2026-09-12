@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "scrape:clubs": "node scripts/scrape-clubs-events.mjs",
-    "scrape:brooklyn": "node scripts/scrape-brooklyn-events.mjs"
+    "scrape:brooklyn": "node scripts/scrape-brooklyn-events.mjs",
+    "scrape:athletics": "node scripts/scrape-athletics-events.mjs"
   },
   "devDependencies": {
     "playwright": "1.63.0"
