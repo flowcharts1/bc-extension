@@ -40,7 +40,7 @@ mission is copied into `description`. Descriptions containing any text,
 including a single space, are left alone.
 
 New clubs get a Firebase club doc using the official club name, the
-`campusGroupsClubId`, `sourceUrl`, mission description, website/social links,
+`campusGroupsClubId`, `sourceUrl`, mission description, social media links,
 and a Storage icon. The authenticated CampusGroups about page is opened only
 when new non-department clubs are found and an icon/social links are needed.
 That auth uses the same `BC_WEBCENTRAL_USERNAME` and `BC_WEBCENTRAL_PASSWORD`

@@ -253,7 +253,6 @@ async function fetchPublicClubList(browser) {
       const sourceUrl = campusGroupsClubId
         ? `https://www.clubs.brooklyn.cuny.edu/student_community?a=1&club_id=${encodeURIComponent(campusGroupsClubId)}`
         : (row.querySelector('h2.media-heading a') ? new URL(row.querySelector('h2.media-heading a').getAttribute('href'), sourceListUrl).href : sourceListUrl);
-      const website = row.querySelector('a[aria-label="Website"], a[aria-description*="website" i]');
       const missionNode = campusGroupsClubId ? row.querySelector(`#club_${CSS.escape(campusGroupsClubId)}`) : null;
       let mission = '';
       if (missionNode) {
@@ -271,8 +270,7 @@ async function fetchPublicClubList(browser) {
         flag,
         mission,
         listLogoUrl: logoUrl,
-        sourceUrl,
-        websiteUrl: website ? new URL(website.getAttribute('href') || website.href, sourceListUrl).href : ''
+        sourceUrl
       };
     }).filter(club => club.name && club.campusGroupsClubId);
   }, listUrl);
@@ -534,9 +532,8 @@ function docIdForNewClub(club) {
   return storageSafeId(club.name);
 }
 
-function mergeLinks(club, about) {
+function mergeLinks(about) {
   const links = [];
-  if (club.websiteUrl) links.push({ label: 'Website', url: club.websiteUrl });
   for (const url of about.socialUrls || []) links.push({ label: 'Social Media', url });
   const seen = new Set();
   return links.filter(link => {
@@ -670,7 +667,7 @@ async function main() {
         sourceUrl: club.sourceUrl,
         subtitle: club.category,
         description: club.mission || '',
-        links: mergeLinks(club, about),
+        links: mergeLinks(about),
         icon: about.icon?.url || '',
         iconPath: about.icon?.path || '',
         flag: club.flag,
