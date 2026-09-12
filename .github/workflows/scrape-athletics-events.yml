@@ -26,7 +26,7 @@ jobs:
       - name: Scrape Athletics events
         env:
           FIREBASE_AUTH_TOKEN: ${{ secrets.FIREBASE_AUTH_TOKEN }}
-        run: npm run scrape:athletics -- --limit=5
+        run: npm run scrape:athletics -- --limit=15
 
       - name: Upload debug artifacts
         if: always()

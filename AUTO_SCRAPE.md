@@ -1,7 +1,7 @@
 # Automated CampusGroups Scrape
 
 This run reads the public CampusGroups mobile calendar JSON feed, ignores past
-events, selects the next 5 upcoming events, logs into Brooklyn College WebCentral,
+events, selects the next 15 upcoming events, logs into Brooklyn College WebCentral,
 opens each event page, and uploads enriched event docs to Firebase.
 Flyers are compressed to JPEG, and flyer icons use the same importer contract:
 a tiny 84x84 square PNG at `events/<eventId>/flyerIcon.png`.
@@ -70,7 +70,7 @@ npm run scrape:club-status -- --dry-run
 Optional:
 
 ```powershell
-npm run scrape:clubs -- --limit=5 --dry-run
+npm run scrape:clubs -- --limit=15 --dry-run
 ```
 
 During each run, Playwright writes the logged-in browser session to

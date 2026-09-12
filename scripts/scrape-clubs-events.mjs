@@ -18,7 +18,7 @@ const DEFAULT_EVENT_URL_TEMPLATE = 'https://www.clubs.brooklyn.cuny.edu/usg/rsvp
 const DEFAULT_LOGIN_URL = 'https://www.clubs.brooklyn.cuny.edu/webapp/auth/login?redirect=%2Fcalendar';
 const AUTH_STATE_PATH = path.resolve('.auth', 'webcentral-storage-state.json');
 const ARTIFACTS_DIR = path.resolve('artifacts');
-const MAX_ACTION_EVENTS = 5;
+const MAX_ACTION_EVENTS = 15;
 const FULL_FLYER_MAX_PX = 1100;
 const FULL_FLYER_QUALITY = 0.68;
 const ICON_SIZE_PX = 84;
@@ -164,10 +164,22 @@ function todayInNewYork() {
   return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
+function addMonths(date, months) {
+  const copy = new Date(date);
+  copy.setUTCMonth(copy.getUTCMonth() + months);
+  return copy;
+}
+
+function maxPostingDate() {
+  return addMonths(new Date(`${todayInNewYork()}T00:00:00.000Z`), 2).toISOString().slice(0, 10);
+}
+
 function isUpcomingEvent(evt) {
   const today = todayInNewYork();
+  const maxDate = maxPostingDate();
   const endDate = normalize(evt.eventEndDateStr || evt.eventDateStr);
   const startDate = normalize(evt.eventDateStr);
+  if (startDate && startDate > maxDate) return false;
   return Boolean((endDate && endDate >= today) || (!endDate && startDate && startDate >= today));
 }
 

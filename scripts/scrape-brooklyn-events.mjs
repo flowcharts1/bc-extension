@@ -14,7 +14,7 @@ const FIREBASE_CONFIG = {
 
 const DEFAULT_API_URL = 'https://www.brooklyn.edu/wp-json/tribe/events/v1/events';
 const ARTIFACTS_DIR = path.resolve('artifacts');
-const MAX_UPLOAD_EVENTS = 5;
+const MAX_UPLOAD_EVENTS = 15;
 const PAGE_SIZE = 300;
 const PER_PAGE = Number(getArgValue('--per-page')) || 50;
 const REQUEST_TIMEOUT_MS = Number(getArgValue('--timeout-ms')) || 45000;
@@ -64,6 +64,12 @@ function addDays(date, days) {
   return copy;
 }
 
+function addMonths(date, months) {
+  const copy = new Date(date);
+  copy.setUTCMonth(copy.getUTCMonth() + months);
+  return copy;
+}
+
 function ymd(date) {
   return date.toISOString().slice(0, 10);
 }
@@ -84,7 +90,11 @@ function defaultStartDate() {
 }
 
 function defaultEndDate() {
-  return getArgValue('--end-date') || ymd(addDays(new Date(`${defaultStartDate()}T00:00:00.000Z`), 31));
+  return getArgValue('--end-date') || ymd(addMonths(new Date(`${defaultStartDate()}T00:00:00.000Z`), 2));
+}
+
+function maxPostingDate() {
+  return ymd(addMonths(new Date(`${todayInNewYork()}T00:00:00.000Z`), 2));
 }
 
 function requestBuffer(url, options = {}) {
@@ -217,6 +227,10 @@ function primaryOrganizer(evt) {
   return organizersOf(evt)[0] || { orgId: '', sourceId: '', name: '', website: '' };
 }
 
+function isConservatoryOfMusicEvent(evt) {
+  return organizersOf(evt).some(org => /conservatory of music/i.test(org.name));
+}
+
 function venueText(evt) {
   const pieces = [];
   for (const venue of [...firstArray(evt.venue), ...firstArray(evt.venues)]) {
@@ -243,7 +257,8 @@ function isCampusEvent(evt) {
 }
 
 function isUpcoming(evt) {
-  return eventDateKey(evt) >= todayInNewYork();
+  const date = eventDateKey(evt);
+  return date >= todayInNewYork() && date <= maxPostingDate();
 }
 
 function imageUrl(evt) {
@@ -405,6 +420,7 @@ async function mergeEvent(evt, orgMap, clubTitleSet) {
   const link = await findRegisterLink(evt);
   const title = eventTitle(evt);
   const archived = clubTitleSet.has(normalizeTitleForMatch(title));
+  const type = isConservatoryOfMusicEvent(evt) ? 'performance' : 'brooklyn event';
 
   return {
     eventId,
@@ -414,7 +430,7 @@ async function mergeEvent(evt, orgMap, clubTitleSet) {
     time: formatTime(evt),
     starttime: starttime(evt),
     room: venueText(evt),
-    type: 'brooklyn event',
+    type,
     description: stripHtml(evt.description || evt.excerpt || ''),
     club: org.name,
     clubId: org.orgId,

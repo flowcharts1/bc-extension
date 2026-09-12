@@ -14,7 +14,7 @@ const FIREBASE_CONFIG = {
 
 const DEFAULT_FEED_URL = 'https://www.brooklyncollegeathletics.com/services/responsive-calendar.ashx?type=month&sport=0&location=all';
 const ARTIFACTS_DIR = path.resolve('artifacts');
-const MAX_UPLOAD_EVENTS = 5;
+const MAX_UPLOAD_EVENTS = 15;
 const PAGE_SIZE = 300;
 const REQUEST_TIMEOUT_MS = Number(getArgValue('--timeout-ms')) || 45000;
 const SPORT_ORDER = ['Basketball', 'Tennis', 'Softball', 'Swimming', 'Soccer', 'Volleyball', 'Cross Country', 'Cheerleading'];
@@ -48,6 +48,16 @@ function todayInNewYork() {
   }).formatToParts(new Date());
   const value = type => parts.find(part => part.type === type)?.value || '';
   return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+function addMonths(date, months) {
+  const copy = new Date(date);
+  copy.setUTCMonth(copy.getUTCMonth() + months);
+  return copy;
+}
+
+function maxPostingDate() {
+  return addMonths(new Date(`${todayInNewYork()}T00:00:00.000Z`), 2).toISOString().slice(0, 10);
 }
 
 function feedDate() {
@@ -230,7 +240,8 @@ function isHomeGame(evt) {
 }
 
 function isUpcoming(evt) {
-  return eventDateKey(evt) >= todayInNewYork();
+  const date = eventDateKey(evt);
+  return date >= todayInNewYork() && date <= maxPostingDate();
 }
 
 function isActiveGame(evt) {

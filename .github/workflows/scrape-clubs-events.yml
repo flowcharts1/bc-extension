@@ -31,7 +31,7 @@ jobs:
           BC_WEBCENTRAL_USERNAME: ${{ secrets.BC_WEBCENTRAL_USERNAME }}
           BC_WEBCENTRAL_PASSWORD: ${{ secrets.BC_WEBCENTRAL_PASSWORD }}
           FIREBASE_AUTH_TOKEN: ${{ secrets.FIREBASE_AUTH_TOKEN }}
-        run: npm run scrape:clubs -- --limit=5
+        run: npm run scrape:clubs -- --limit=15
 
       - name: Upload debug artifacts
         if: always()
