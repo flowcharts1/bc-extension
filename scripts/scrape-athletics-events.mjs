@@ -14,7 +14,7 @@ const FIREBASE_CONFIG = {
 
 const DEFAULT_FEED_URL = 'https://www.brooklyncollegeathletics.com/services/responsive-calendar.ashx?type=month&sport=0&location=all';
 const ARTIFACTS_DIR = path.resolve('artifacts');
-const MAX_UPLOAD_EVENTS = 15;
+const MAX_UPLOAD_EVENTS = 5;
 const PAGE_SIZE = 300;
 const REQUEST_TIMEOUT_MS = Number(getArgValue('--timeout-ms')) || 45000;
 const SPORT_ORDER = ['Basketball', 'Tennis', 'Softball', 'Swimming', 'Soccer', 'Volleyball', 'Cross Country', 'Cheerleading'];
