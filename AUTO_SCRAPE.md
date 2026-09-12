@@ -3,6 +3,8 @@
 This run reads the public CampusGroups mobile calendar JSON feed, ignores past
 events, samples up to 15 upcoming events, logs into Brooklyn College WebCentral,
 opens each event page, and uploads enriched event docs to Firebase.
+Flyers are compressed to JPEG, and flyer icons use the same importer contract:
+a tiny 120x120 square PNG at `events/<eventId>/flyerIcon.png`.
 
 Past events should not be archived or deleted just because they are removed from
 the CampusGroups JSON feed later. The feed is used as an import source, not as a

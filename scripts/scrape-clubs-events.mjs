@@ -21,8 +21,7 @@ const ARTIFACTS_DIR = path.resolve('artifacts');
 const MAX_ACTION_EVENTS = 15;
 const FULL_FLYER_MAX_PX = 1100;
 const FULL_FLYER_QUALITY = 0.68;
-const ICON_MAX_PX = 240;
-const ICON_QUALITY = 0.62;
+const ICON_SIZE_PX = 120;
 const REQUEST_TIMEOUT_MS = Number(getArgValue('--timeout-ms')) || 45000;
 
 const username = process.env.BC_WEBCENTRAL_USERNAME || '';
@@ -494,7 +493,7 @@ function dataUrlToBuffer(dataUrl) {
 }
 
 async function compressFlyerImages(page, flyerUrl) {
-  return page.evaluate(async ({ url, fullMaxPx, fullQuality, iconMaxPx, iconQuality }) => {
+  return page.evaluate(async ({ url, fullMaxPx, fullQuality, iconSizePx }) => {
     const response = await fetch(url, { credentials: 'include' });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const sourceBlob = await response.blob();
@@ -521,8 +520,24 @@ async function compressFlyerImages(page, flyerUrl) {
       };
     };
 
+    const renderIcon = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = iconSizePx;
+      canvas.height = iconSizePx;
+      const scale = iconSizePx / Math.min(bitmap.width, bitmap.height);
+      const width = Math.round(bitmap.width * scale);
+      const height = Math.round(bitmap.height * scale);
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, -(width - iconSizePx) / 2, -(height - iconSizePx) / 2, width, height);
+      return {
+        width: iconSizePx,
+        height: iconSizePx,
+        dataUrl: canvas.toDataURL('image/png')
+      };
+    };
+
     const full = await render(fullMaxPx, fullQuality);
-    const icon = await render(iconMaxPx, iconQuality);
+    const icon = renderIcon();
     bitmap.close?.();
     return {
       sourceBytes: sourceBlob.size,
@@ -533,8 +548,7 @@ async function compressFlyerImages(page, flyerUrl) {
     url: flyerUrl,
     fullMaxPx: FULL_FLYER_MAX_PX,
     fullQuality: FULL_FLYER_QUALITY,
-    iconMaxPx: ICON_MAX_PX,
-    iconQuality: ICON_QUALITY
+    iconSizePx: ICON_SIZE_PX
   });
 }
 
@@ -558,7 +572,7 @@ async function uploadFlyerIfAvailable(page, event) {
   try {
     const compressed = await compressFlyerImages(page, event.flyer);
     const full = await uploadStorageData(`events/${event.eventId}/flyer.jpg`, compressed.full.dataUrl);
-    const icon = await uploadStorageData(`events/${event.eventId}/flyerIcon.jpg`, compressed.icon.dataUrl);
+    const icon = await uploadStorageData(`events/${event.eventId}/flyerIcon.png`, compressed.icon.dataUrl);
     event.flyer = full.url;
     event.flyerPath = full.path;
     event.flyerIcon = icon.url;
