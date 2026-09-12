@@ -1,8 +1,12 @@
 # Automated CampusGroups Scrape
 
-This test run logs into Brooklyn College WebCentral, opens the CampusGroups
-calendar, parses event pages, and prints a random sample of event names plus
-locations. It does not connect to Firebase or upload anything.
+This run reads the public CampusGroups mobile calendar JSON feed, ignores past
+events, samples up to 15 upcoming events, logs into Brooklyn College WebCentral,
+opens each event page, and uploads enriched event docs to Firebase.
+
+Past events should not be archived or deleted just because they are removed from
+the CampusGroups JSON feed later. The feed is used as an import source, not as a
+delete authority.
 
 ## GitHub Setup
 
@@ -29,7 +33,7 @@ npm run scrape:clubs
 Optional:
 
 ```powershell
-npm run scrape:clubs -- --limit=10 --sample-size=3
+npm run scrape:clubs -- --limit=10 --dry-run
 ```
 
 During each run, Playwright writes the logged-in browser session to

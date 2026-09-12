@@ -19,6 +19,10 @@ const DEFAULT_LOGIN_URL = 'https://www.clubs.brooklyn.cuny.edu/webapp/auth/login
 const AUTH_STATE_PATH = path.resolve('.auth', 'webcentral-storage-state.json');
 const ARTIFACTS_DIR = path.resolve('artifacts');
 const MAX_ACTION_EVENTS = 15;
+const FULL_FLYER_MAX_PX = 1100;
+const FULL_FLYER_QUALITY = 0.68;
+const ICON_MAX_PX = 240;
+const ICON_QUALITY = 0.62;
 const REQUEST_TIMEOUT_MS = Number(getArgValue('--timeout-ms')) || 45000;
 
 const username = process.env.BC_WEBCENTRAL_USERNAME || '';
@@ -140,7 +144,25 @@ async function requestJson(url, options = {}) {
 async function fetchMobileFeedEvents() {
   const data = await requestJson(feedUrl);
   const events = Array.isArray(data.events) ? data.events : [];
-  return events.filter(evt => evt && evt.id && evt.isDisplay !== false && evt.isHideFromCalendar !== true);
+  return events.filter(evt => evt && evt.id && evt.isDisplay !== false && evt.isHideFromCalendar !== true && isUpcomingEvent(evt));
+}
+
+function todayInNewYork() {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/New_York',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date());
+  const value = type => parts.find(part => part.type === type)?.value || '';
+  return `${value('year')}-${value('month')}-${value('day')}`;
+}
+
+function isUpcomingEvent(evt) {
+  const today = todayInNewYork();
+  const endDate = normalize(evt.eventEndDateStr || evt.eventDateStr);
+  const startDate = normalize(evt.eventDateStr);
+  return Boolean((endDate && endDate >= today) || (!endDate && startDate && startDate >= today));
 }
 
 function shuffle(items) {
@@ -420,7 +442,9 @@ function mergeEvent(feedEvent, pageEvent) {
     club: decodeEntities(pageEvent.club || feedEvent.groupName || ''),
     clubId: '',
     flyer: absoluteUrl(pageEvent.flyerUrl || feedEvent.eventFlyer || '', sourceUrl),
+    flyerPath: '',
     flyerIcon: '',
+    flyerIconPath: '',
     links: [{ label: 'Register/Info', url: sourceUrl }],
     confirmed: 1
   };
@@ -460,26 +484,86 @@ function storagePublicUrl(storagePath, token) {
   return url.toString();
 }
 
+function dataUrlToBuffer(dataUrl) {
+  const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw new Error('Invalid image data URL returned from browser compression.');
+  return {
+    contentType: match[1],
+    body: Buffer.from(match[2], 'base64')
+  };
+}
+
+async function compressFlyerImages(page, flyerUrl) {
+  return page.evaluate(async ({ url, fullMaxPx, fullQuality, iconMaxPx, iconQuality }) => {
+    const response = await fetch(url, { credentials: 'include' });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const sourceBlob = await response.blob();
+    if (!/^image\/(jpeg|png|webp|gif)/i.test(sourceBlob.type || '')) {
+      throw new Error(`Unexpected content type ${sourceBlob.type || 'unknown'}`);
+    }
+
+    const bitmap = await createImageBitmap(sourceBlob);
+    const render = async (maxPx, quality) => {
+      const scale = Math.min(1, maxPx / Math.max(bitmap.width, bitmap.height));
+      const width = Math.max(1, Math.round(bitmap.width * scale));
+      const height = Math.max(1, Math.round(bitmap.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(bitmap, 0, 0, width, height);
+      return {
+        width,
+        height,
+        dataUrl: canvas.toDataURL('image/jpeg', quality)
+      };
+    };
+
+    const full = await render(fullMaxPx, fullQuality);
+    const icon = await render(iconMaxPx, iconQuality);
+    bitmap.close?.();
+    return {
+      sourceBytes: sourceBlob.size,
+      full,
+      icon
+    };
+  }, {
+    url: flyerUrl,
+    fullMaxPx: FULL_FLYER_MAX_PX,
+    fullQuality: FULL_FLYER_QUALITY,
+    iconMaxPx: ICON_MAX_PX,
+    iconQuality: ICON_QUALITY
+  });
+}
+
+async function uploadStorageData(storagePath, dataUrl) {
+  const { body, contentType } = dataUrlToBuffer(dataUrl);
+  const upload = await requestJson(storageUploadUrl(storagePath), {
+    method: 'POST',
+    body,
+    headers: { 'Content-Type': contentType }
+  });
+  return {
+    url: storagePublicUrl(upload.name || storagePath, upload.downloadTokens),
+    path: upload.name || storagePath,
+    bytes: body.length
+  };
+}
+
 async function uploadFlyerIfAvailable(page, event) {
   if (!event.flyer || dryRun) return event;
 
   try {
-    const response = await page.request.get(event.flyer, { timeout: REQUEST_TIMEOUT_MS });
-    if (!response.ok()) throw new Error(`HTTP ${response.status()}`);
-
-    const contentType = response.headers()['content-type'] || 'image/jpeg';
-    if (!/^image\/(jpeg|png|webp|gif)/i.test(contentType)) throw new Error(`Unexpected content type ${contentType}`);
-
-    const ext = contentType.includes('png') ? 'png' : contentType.includes('webp') ? 'webp' : contentType.includes('gif') ? 'gif' : 'jpg';
-    const storagePath = `events/${event.eventId}/flyer.${ext}`;
-    const body = await response.body();
-    const upload = await requestJson(storageUploadUrl(storagePath), {
-      method: 'POST',
-      body,
-      headers: { 'Content-Type': contentType }
-    });
-    event.flyer = storagePublicUrl(upload.name || storagePath, upload.downloadTokens);
-    event.flyerPath = upload.name || storagePath;
+    const compressed = await compressFlyerImages(page, event.flyer);
+    const full = await uploadStorageData(`events/${event.eventId}/flyer.jpg`, compressed.full.dataUrl);
+    const icon = await uploadStorageData(`events/${event.eventId}/flyerIcon.jpg`, compressed.icon.dataUrl);
+    event.flyer = full.url;
+    event.flyerPath = full.path;
+    event.flyerIcon = icon.url;
+    event.flyerIconPath = icon.path;
+    console.log(`Compressed flyer for ${event.eventId}: ${compressed.sourceBytes} -> ${full.bytes} bytes, icon ${icon.bytes} bytes`);
   } catch (err) {
     console.warn(`Flyer upload skipped for ${event.eventId}: ${err.message.split('\n')[0]}`);
   }
@@ -504,8 +588,8 @@ async function uploadEvent(event) {
 async function main() {
   console.log(`Fetching mobile calendar JSON from ${feedUrl}`);
   const feedEvents = await fetchMobileFeedEvents();
-  console.log(`Feed returned ${feedEvents.length} displayable events.`);
-  if (!feedEvents.length) throw new Error('No events found in the mobile calendar feed.');
+  console.log(`Feed returned ${feedEvents.length} upcoming displayable events. Past events are ignored and are never archived/deleted just because they disappear from the JSON feed.`);
+  if (!feedEvents.length) throw new Error('No upcoming events found in the mobile calendar feed.');
 
   const selected = shuffle(feedEvents).slice(0, limit);
   console.log(`Randomly selected ${selected.length} events. Hard cap is ${MAX_ACTION_EVENTS}.`);
