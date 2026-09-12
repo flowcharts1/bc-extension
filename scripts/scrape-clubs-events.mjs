@@ -18,10 +18,11 @@ const DEFAULT_EVENT_URL_TEMPLATE = 'https://www.clubs.brooklyn.cuny.edu/usg/rsvp
 const DEFAULT_LOGIN_URL = 'https://www.clubs.brooklyn.cuny.edu/webapp/auth/login?redirect=%2Fcalendar';
 const AUTH_STATE_PATH = path.resolve('.auth', 'webcentral-storage-state.json');
 const ARTIFACTS_DIR = path.resolve('artifacts');
-const MAX_ACTION_EVENTS = 15;
+const MAX_ACTION_EVENTS = 5;
 const FULL_FLYER_MAX_PX = 1100;
 const FULL_FLYER_QUALITY = 0.68;
-const ICON_SIZE_PX = 120;
+const ICON_SIZE_PX = 84;
+const PAGE_SIZE = 300;
 const REQUEST_TIMEOUT_MS = Number(getArgValue('--timeout-ms')) || 45000;
 
 const username = process.env.BC_WEBCENTRAL_USERNAME || '';
@@ -64,6 +65,12 @@ function absoluteUrl(rawUrl, baseUrl) {
   } catch (_) {
     return rawUrl;
   }
+}
+
+function hasNativeFlyerUrl(value) {
+  const url = normalize(value).toLowerCase();
+  if (!url) return false;
+  return !/listing-default|default(?:_|-)?event|default(?:_|-)?flyer|placeholder|no(?:_|-)?image|event(?:_|-)?default/.test(url);
 }
 
 function eventPageUrl(id) {
@@ -164,13 +171,13 @@ function isUpcomingEvent(evt) {
   return Boolean((endDate && endDate >= today) || (!endDate && startDate && startDate >= today));
 }
 
-function shuffle(items) {
-  const copy = [...items];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy;
+function feedEventSortKey(evt) {
+  return [
+    normalize(evt.eventDateStr || evt.eventDate || evt.startDate || evt.date),
+    getStarttimeFromTimeText([evt.startTime, evt.eventTime, evt.time].filter(Boolean).join(' ')) || '9999',
+    normalize(evt.title),
+    normalize(evt.id)
+  ].join('|');
 }
 
 async function isLoggedInEventPage(page) {
@@ -378,7 +385,8 @@ async function parseEventPage(page, sourceUrl) {
     const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
     const getText = selector => clean(document.querySelector(selector)?.textContent || '');
     const title = getText('.rsvp__event-name');
-    const club = clean(document.querySelector('.rsvp__event-org .btn-link')?.textContent || '');
+    const orgRoot = document.querySelector('.rsvp__event-org');
+    const club = clean(orgRoot?.querySelector('.btn-link')?.textContent || orgRoot?.textContent || '');
     const dateParts = document.querySelectorAll('.card-block .col-md-4_5 p');
     const rawDate = clean(dateParts[0]?.textContent || '');
     const time = clean((dateParts[1]?.textContent || '').replace(/EDT.*$/i, '').replace(/EST.*$/i, ''));
@@ -428,6 +436,7 @@ function mergeEvent(feedEvent, pageEvent) {
   const sourceUrl = eventPageUrl(cgId);
   const date = feedEvent.eventDateStr || dateFromRaw(pageEvent.rawDate || feedEvent.eventDate);
   const time = decodeEntities(pageEvent.time || [feedEvent.startTime, feedEvent.endTime].filter(Boolean).join(' - '));
+  const flyerUrl = absoluteUrl(pageEvent.flyerUrl || feedEvent.eventFlyer || '', sourceUrl);
   const event = {
     eventId: `c_${cgId}`,
     cgId,
@@ -440,7 +449,7 @@ function mergeEvent(feedEvent, pageEvent) {
     description: decodeEntities(pageEvent.description || feedEvent.eventDescription || ''),
     club: decodeEntities(pageEvent.club || feedEvent.groupName || ''),
     clubId: '',
-    flyer: absoluteUrl(pageEvent.flyerUrl || feedEvent.eventFlyer || '', sourceUrl),
+    flyer: hasNativeFlyerUrl(flyerUrl) ? flyerUrl : '',
     flyerPath: '',
     flyerIcon: '',
     flyerIconPath: '',
@@ -469,6 +478,14 @@ function firestoreDocumentUrl(docId) {
   return url.toString();
 }
 
+function firestoreCollectionUrl(collectionName, pageToken = '') {
+  const url = new URL(`https://firestore.googleapis.com/v1/projects/${FIREBASE_CONFIG.projectId}/databases/(default)/documents/${collectionName}`);
+  url.searchParams.set('key', FIREBASE_CONFIG.apiKey);
+  url.searchParams.set('pageSize', String(PAGE_SIZE));
+  if (pageToken) url.searchParams.set('pageToken', pageToken);
+  return url.toString();
+}
+
 function storageUploadUrl(storagePath) {
   const url = new URL(`https://firebasestorage.googleapis.com/v0/b/${FIREBASE_CONFIG.storageBucket}/o`);
   url.searchParams.set('uploadType', 'media');
@@ -483,6 +500,19 @@ function storagePublicUrl(storagePath, token) {
   return url.toString();
 }
 
+function storageObjectUrl(storagePath) {
+  const url = new URL(`https://firebasestorage.googleapis.com/v0/b/${FIREBASE_CONFIG.storageBucket}/o/${encodeURIComponent(storagePath)}`);
+  url.searchParams.set('key', FIREBASE_CONFIG.apiKey);
+  return url.toString();
+}
+
+function storageListUrl(prefix) {
+  const url = new URL(`https://firebasestorage.googleapis.com/v0/b/${FIREBASE_CONFIG.storageBucket}/o`);
+  url.searchParams.set('key', FIREBASE_CONFIG.apiKey);
+  url.searchParams.set('prefix', prefix);
+  return url.toString();
+}
+
 function dataUrlToBuffer(dataUrl) {
   const match = String(dataUrl || '').match(/^data:([^;]+);base64,(.+)$/);
   if (!match) throw new Error('Invalid image data URL returned from browser compression.');
@@ -490,6 +520,187 @@ function dataUrlToBuffer(dataUrl) {
     contentType: match[1],
     body: Buffer.from(match[2], 'base64')
   };
+}
+
+function docIdFromName(name) {
+  return String(name || '').split('/').pop();
+}
+
+function decodeFirestoreValue(value) {
+  if (!value || typeof value !== 'object') return value;
+  if ('nullValue' in value) return null;
+  if ('booleanValue' in value) return value.booleanValue;
+  if ('integerValue' in value) {
+    const asNumber = Number(value.integerValue);
+    return Number.isSafeInteger(asNumber) ? asNumber : value.integerValue;
+  }
+  if ('doubleValue' in value) return value.doubleValue;
+  if ('timestampValue' in value) return value.timestampValue;
+  if ('stringValue' in value) return value.stringValue;
+  if ('arrayValue' in value) return (value.arrayValue.values || []).map(decodeFirestoreValue);
+  if ('mapValue' in value) return decodeFirestoreFields(value.mapValue.fields || {});
+  return value;
+}
+
+function decodeFirestoreFields(fields) {
+  return Object.fromEntries(Object.entries(fields || {}).map(([key, value]) => [key, decodeFirestoreValue(value)]));
+}
+
+async function fetchCollection(collectionName) {
+  const docs = [];
+  let pageToken = '';
+  do {
+    const page = await requestJson(firestoreCollectionUrl(collectionName, pageToken));
+    docs.push(...(page.documents || []).map(doc => ({
+      id: docIdFromName(doc.name),
+      data: decodeFirestoreFields(doc.fields || {})
+    })));
+    pageToken = page.nextPageToken || '';
+  } while (pageToken);
+  return docs;
+}
+
+function normalizeLookupKey(value) {
+  return decodeEntities(value)
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\b(the|club|student|association|organization|society|inc)\b/g, ' ')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function lookupAliases(value) {
+  const text = decodeEntities(value);
+  const aliases = new Set([normalizeLookupKey(text)]);
+  const noParen = normalizeLookupKey(text.replace(/\([^)]*\)/g, ' '));
+  if (noParen) aliases.add(noParen);
+  for (const match of text.matchAll(/\(([^)]+)\)/g)) {
+    const alias = normalizeLookupKey(match[1]);
+    if (alias) aliases.add(alias);
+  }
+  const acronym = normalizeLookupKey(text).split(/\s+/).filter(Boolean).map(word => word[0]).join('');
+  if (acronym.length >= 2) aliases.add(acronym);
+  return [...aliases].filter(Boolean);
+}
+
+function normalizeTitleForMatch(value) {
+  return decodeEntities(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function buildOrgLookup(...docGroups) {
+  const lookup = new Map();
+  for (const docs of docGroups) {
+    for (const doc of docs) {
+      const data = { ...(doc.data || {}), _docId: doc.id };
+      const names = [
+        doc.id,
+        data.name,
+        data.title,
+        data.club,
+        data.org,
+        data.groupName,
+        data.displayName,
+        data.clubId,
+        data.campusGroupsClubId,
+        data.sourceId
+      ];
+      for (const name of names) {
+        for (const key of lookupAliases(name)) {
+          const prior = lookup.get(key);
+          if (!prior || (!hasLogoRef(prior) && hasLogoRef(data))) lookup.set(key, data);
+        }
+      }
+    }
+  }
+  return lookup;
+}
+
+function findLogoUrl(data) {
+  return data.icon || data.logo || data.featuredImage || data.image || data.photo || '';
+}
+
+function hasLogoRef(data) {
+  return Boolean(findLogoUrl(data) || storagePathCandidates(data).length);
+}
+
+function storagePathCandidates(data) {
+  return [
+    data.iconPath,
+    data.logoPath,
+    data.featuredImagePath,
+    data.imagePath,
+    data.photoPath
+  ].map(normalize).filter(Boolean);
+}
+
+function storagePathFromMaybeUrl(value) {
+  const text = normalize(value);
+  if (!text) return '';
+  if (/^gs:\/\//i.test(text)) return text.replace(/^gs:\/\/[^/]+\//i, '');
+  const match = text.match(/\/o\/([^?]+)/);
+  return match ? decodeURIComponent(match[1]) : (/^https?:\/\//i.test(text) ? '' : text);
+}
+
+async function publicUrlForStoragePath(storagePath) {
+  const meta = await requestJson(storageObjectUrl(storagePath));
+  return {
+    url: storagePublicUrl(meta.name || storagePath, meta.downloadTokens),
+    path: meta.name || storagePath
+  };
+}
+
+function storageIdCandidates(data) {
+  const raw = [data._docId, data.clubId, data.name].map(normalize).filter(Boolean);
+  const aliases = [data._docId, data.clubId, data.name].flatMap(lookupAliases);
+  return [...new Set([...raw, ...aliases])];
+}
+
+async function findFirstClubStorageLogo(data) {
+  const ids = storageIdCandidates(data);
+  const prefixes = [...new Set(ids.map(id => `clubs/${id}/`))];
+  for (const prefix of prefixes) {
+    try {
+      const listing = await requestJson(storageListUrl(prefix));
+      const item = (listing.items || [])
+        .filter(entry => /^image\//i.test(entry.contentType || '') || /\.(png|jpe?g|webp)$/i.test(entry.name || ''))
+        .sort((a, b) => Number(Boolean(/icon/i.test(b.name || ''))) - Number(Boolean(/icon/i.test(a.name || ''))))[0];
+      if (item?.name) return publicUrlForStoragePath(item.name);
+    } catch (err) {
+      console.warn(`Could not list Storage prefix ${prefix}: ${err.message.split('\n')[0]}`);
+    }
+  }
+  return null;
+}
+
+async function resolveClubLogo(data) {
+  const url = findLogoUrl(data);
+  if (/^https?:\/\//i.test(url)) return { url, path: storagePathCandidates(data)[0] || storagePathFromMaybeUrl(url) };
+  const urlStoragePath = storagePathFromMaybeUrl(url);
+  if (urlStoragePath) {
+    try {
+      return await publicUrlForStoragePath(urlStoragePath);
+    } catch (err) {
+      console.warn(`Could not read logo metadata at ${urlStoragePath}: ${err.message.split('\n')[0]}`);
+    }
+  }
+
+  for (const storagePath of storagePathCandidates(data)) {
+    try {
+      return await publicUrlForStoragePath(storagePath);
+    } catch (err) {
+      console.warn(`Could not read logo metadata at ${storagePath}: ${err.message.split('\n')[0]}`);
+    }
+  }
+
+  return findFirstClubStorageLogo(data);
+}
+
+async function findOrgLogo(clubName, orgLookup) {
+  const direct = lookupAliases(clubName).map(key => orgLookup.get(key)).find(Boolean);
+  if (!direct) return null;
+  const logo = await resolveClubLogo(direct);
+  return logo ? { ...logo, org: direct } : null;
 }
 
 async function fetchFlyerSource(page, flyerUrl) {
@@ -587,6 +798,7 @@ async function uploadStorageData(storagePath, dataUrl) {
 
 async function uploadFlyerIfAvailable(page, event) {
   if (!event.flyer || dryRun) return event;
+  if (event._fallbackLogo) return event;
 
   try {
     const sourceUrl = event.flyer;
@@ -613,8 +825,9 @@ async function uploadFlyerIfAvailable(page, event) {
 }
 
 async function uploadEvent(event) {
+  const { _fallbackLogo, ...cleanEvent } = event;
   const docData = {
-    ...event,
+    ...cleanEvent,
     createdAt: { __serverTimestamp: true }
   };
   const fields = firestoreFields(docData);
@@ -626,14 +839,54 @@ async function uploadEvent(event) {
   });
 }
 
+async function archiveBrooklynEventsMatchingClubTitles(eventDocs, clubEvents) {
+  const uploadedTitleSet = new Set(clubEvents.map(event => normalizeTitleForMatch(event.title)).filter(Boolean));
+  if (!uploadedTitleSet.size) return [];
+
+  const matches = eventDocs
+    .filter(doc => {
+      const eventId = normalize(doc.data.eventId || doc.id);
+      const type = normalize(doc.data.type).toLowerCase();
+      return eventId.startsWith('b_') || type === 'brooklyn event';
+    })
+    .filter(doc => uploadedTitleSet.has(normalizeTitleForMatch(doc.data.title)))
+    .filter(doc => doc.data.archived !== true);
+
+  for (const match of matches) {
+    if (dryRun) {
+      console.log(`DRY RUN archive ${match.id}: Brooklyn event title matches uploaded club event "${match.data.title || ''}"`);
+      continue;
+    }
+    await requestJson(firestoreDocumentUrl(match.id), {
+      method: 'PATCH',
+      body: JSON.stringify({
+        fields: {
+          archived: { booleanValue: true },
+          updatedAt: { timestampValue: new Date().toISOString() }
+        }
+      }),
+      headers: { 'Content-Type': 'application/json' }
+    });
+    console.log(`Archived ${match.id}: Brooklyn event title matches uploaded club event "${match.data.title || ''}"`);
+  }
+
+  return matches;
+}
+
 async function main() {
   console.log(`Fetching mobile calendar JSON from ${feedUrl}`);
-  const feedEvents = await fetchMobileFeedEvents();
+  const [feedEvents, existingEvents, clubDocs, orgDocs] = await Promise.all([
+    fetchMobileFeedEvents(),
+    fetchCollection('events'),
+    fetchCollection('clubs'),
+    fetchCollection('orgs')
+  ]);
+  const orgLookup = buildOrgLookup(clubDocs, orgDocs);
   console.log(`Feed returned ${feedEvents.length} upcoming displayable events. Past events are ignored and are never archived/deleted just because they disappear from the JSON feed.`);
   if (!feedEvents.length) throw new Error('No upcoming events found in the mobile calendar feed.');
 
-  const selected = shuffle(feedEvents).slice(0, limit);
-  console.log(`Randomly selected ${selected.length} events. Hard cap is ${MAX_ACTION_EVENTS}.`);
+  const selected = [...feedEvents].sort((a, b) => feedEventSortKey(a).localeCompare(feedEventSortKey(b))).slice(0, limit);
+  console.log(`Selected next ${selected.length} events. Hard cap is ${MAX_ACTION_EVENTS}.`);
 
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext();
@@ -656,7 +909,24 @@ async function main() {
         await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
         await loginIfNeeded(page, sourceUrl);
         const pageEvent = await parseEventPage(page, sourceUrl);
-        const event = await uploadFlyerIfAvailable(page, mergeEvent(feedEvent, pageEvent));
+        const event = mergeEvent(feedEvent, pageEvent);
+        if (!hasNativeFlyerUrl(event.flyer)) {
+          event.flyer = '';
+          event.flyerPath = '';
+          const logo = await findOrgLogo(event.club, orgLookup);
+          if (logo) {
+            event.flyer = logo.url;
+            event.flyerPath = logo.path;
+            event.flyerIcon = logo.url;
+            event.flyerIconPath = logo.path;
+            event.clubId = normalize(logo.org?.clubId || logo.org?._docId || event.clubId);
+            event._fallbackLogo = true;
+            console.log(`Using club logo as fallback flyer for ${event.eventId}: ${event.club}`);
+          } else {
+            console.warn(`No fallback logo found for ${event.eventId}: ${event.club || 'unknown club'}`);
+          }
+        }
+        await uploadFlyerIfAvailable(page, event);
         if (dryRun) {
           console.log(`[${index + 1}/${selected.length}] DRY RUN ${event.eventId}: ${event.title} (${event.room || 'no location'})`);
         } else {
@@ -684,8 +954,13 @@ async function main() {
 
   if (!uploaded.length) throw new Error('No sampled events were successfully parsed/uploaded.');
 
+  const archivedBrooklynMatches = await archiveBrooklynEventsMatchingClubTitles(existingEvents, uploaded);
+
   console.log('');
-  console.log(`CONFIRMED: sampled ${selected.length} random events, ${dryRun ? 'parsed' : 'uploaded'} ${uploaded.length}, failed ${failed.length}. Exiting before scraping anything else.`);
+  console.log(`CONFIRMED: selected ${selected.length} next events, ${dryRun ? 'parsed' : 'uploaded'} ${uploaded.length}, failed ${failed.length}. Exiting before scraping anything else.`);
+  if (archivedBrooklynMatches.length) {
+    console.log(`${dryRun ? 'Would archive' : 'Archived'} ${archivedBrooklynMatches.length} Brooklyn.edu events with matching club-event titles.`);
+  }
 }
 
 main().catch(err => {
