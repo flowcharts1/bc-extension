@@ -600,6 +600,10 @@ function normalizeTitleForMatch(value) {
   return decodeEntities(value).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 }
 
+function buildExistingIdSet(eventDocs) {
+  return new Set(eventDocs.map(doc => normalize(doc.data.eventId || doc.id)).filter(Boolean));
+}
+
 function buildOrgLookup(...docGroups) {
   const lookup = new Map();
   for (const docs of docGroups) {
@@ -894,11 +898,15 @@ async function main() {
     fetchCollection('orgs')
   ]);
   const orgLookup = buildOrgLookup(clubDocs, orgDocs);
+  const existingIds = buildExistingIdSet(existingEvents);
   console.log(`Feed returned ${feedEvents.length} upcoming displayable events. Past events are ignored and are never archived/deleted just because they disappear from the JSON feed.`);
   if (!feedEvents.length) throw new Error('No upcoming events found in the mobile calendar feed.');
 
-  const selected = [...feedEvents].sort((a, b) => feedEventSortKey(a).localeCompare(feedEventSortKey(b))).slice(0, limit);
-  console.log(`Selected next ${selected.length} events. Hard cap is ${MAX_ACTION_EVENTS}.`);
+  const selected = [...feedEvents]
+    .filter(evt => !existingIds.has(`c_${evt.id}`))
+    .sort((a, b) => feedEventSortKey(a).localeCompare(feedEventSortKey(b)))
+    .slice(0, limit);
+  console.log(`Selected next ${selected.length} new events. Existing c_ events are ignored. Hard cap is ${MAX_ACTION_EVENTS}.`);
 
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext();
