@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "scrape:clubs": "node scripts/scrape-clubs-events.mjs",
+    "scrape:club-status": "node scripts/scrape-club-status.mjs",
     "scrape:brooklyn": "node scripts/scrape-brooklyn-events.mjs",
     "scrape:athletics": "node scripts/scrape-athletics-events.mjs"
   },

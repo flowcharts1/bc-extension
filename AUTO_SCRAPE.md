@@ -22,6 +22,33 @@ Add repository secrets in GitHub:
 The workflow runs daily at `10:15 UTC`, and can also be run manually from
 Actions -> Scrape Clubs Events -> Run workflow.
 
+## Weekly Club Status Scrape
+
+The club status workflow reads the public all-clubs page first:
+
+`https://www.clubs.brooklyn.cuny.edu/club_signup?view=all&`
+
+It ignores departments, compares remaining clubs to the Firebase `clubs`
+collection, and writes `flag: "active"` or `flag: "inactive"` on matched clubs.
+Clubs with `Group Not Registered Yet` are inactive unless they also show
+`Pending Approval`, which stays active. If two-thirds or more clubs are not
+registered yet, the run skips all Firebase flagging for safety.
+
+For existing clubs, the only normal update is `flag`. If an active club has an
+empty or missing Firebase description and the public list has a mission, the
+mission is copied into `description`. Descriptions containing any text,
+including a single space, are left alone.
+
+New clubs get a Firebase club doc using the official club name, the
+`campusGroupsClubId`, `sourceUrl`, mission description, website/social links,
+and a Storage icon. The authenticated CampusGroups about page is opened only
+when new non-department clubs are found and an icon/social links are needed.
+That auth uses the same `BC_WEBCENTRAL_USERNAME` and `BC_WEBCENTRAL_PASSWORD`
+secrets as the club-event scraper.
+
+The workflow runs weekly on Mondays at `11:20 UTC`, and can also be run manually
+from Actions -> Scrape Club Status -> Run workflow.
+
 ## Local Test
 
 Use Node 20 or newer.
@@ -32,6 +59,12 @@ npx playwright install chromium
 $env:BC_WEBCENTRAL_USERNAME="your_username"
 $env:BC_WEBCENTRAL_PASSWORD="your_password"
 npm run scrape:clubs
+```
+
+For the weekly club status scraper:
+
+```powershell
+npm run scrape:club-status -- --dry-run
 ```
 
 Optional:
