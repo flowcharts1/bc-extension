@@ -48,15 +48,23 @@ async function visibleLocator(page, selectors) {
 }
 
 async function fillAndSignal(locator, value) {
+  const canFill = await locator.evaluate(el => {
+    const tag = el.tagName.toLowerCase();
+    return tag === 'input' || tag === 'textarea' || tag === 'select' || el.isContentEditable;
+  }).catch(() => false);
+  if (!canFill) return false;
   await locator.fill(value);
   await locator.evaluate(el => {
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
   }).catch(() => {});
+  return true;
 }
 
 async function clickOptionalLoginLink(page) {
   const locator = await visibleLocator(page, [
+    'a[href*="/cas/brooklyn"]',
+    'a:has-text("BC WebCentral Login")',
     'a[href*="/cas/login"]',
     'a[href*="login.brooklyn.cuny.edu"]',
     'button:has-text("Login")',
@@ -156,15 +164,6 @@ async function loginIfNeeded(page) {
       'input[type="text"]'
     ]);
 
-    if (!usernameInput) {
-      usernameInput = page.getByLabel(/user|login|webcentral|email/i).first();
-      if (!(await usernameInput.isVisible().catch(() => false))) usernameInput = null;
-    }
-    if (!passwordInput) {
-      passwordInput = page.getByLabel(/password/i).first();
-      if (!(await passwordInput.isVisible().catch(() => false))) passwordInput = null;
-    }
-
     if (!usernameInput && !passwordInput) {
       if (await isOnEventOrCalendarPage(page)) return;
       if (!(await clickOptionalLoginLink(page))) {
@@ -173,8 +172,14 @@ async function loginIfNeeded(page) {
       continue;
     }
 
-    if (usernameInput) await fillAndSignal(usernameInput, username);
-    if (passwordInput) await fillAndSignal(passwordInput, password);
+    const filledUsername = usernameInput ? await fillAndSignal(usernameInput, username) : false;
+    const filledPassword = passwordInput ? await fillAndSignal(passwordInput, password) : false;
+    if (!filledUsername && !filledPassword) {
+      if (!(await clickOptionalLoginLink(page))) {
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      }
+      continue;
+    }
 
     const submit = await visibleLocator(page, [
       '#submit',
