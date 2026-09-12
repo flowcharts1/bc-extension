@@ -47,6 +47,33 @@ async function visibleLocator(page, selectors) {
   return null;
 }
 
+async function fillAndSignal(locator, value) {
+  await locator.fill(value);
+  await locator.evaluate(el => {
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }).catch(() => {});
+}
+
+async function clickOptionalLoginLink(page) {
+  const locator = await visibleLocator(page, [
+    'a[href*="/cas/login"]',
+    'a[href*="login.brooklyn.cuny.edu"]',
+    'button:has-text("Login")',
+    'button:has-text("Log in")',
+    'a:has-text("Login")',
+    'a:has-text("Log in")',
+    'input[type="submit"]'
+  ]);
+  if (!locator) return false;
+  await Promise.all([
+    page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {}),
+    locator.click()
+  ]);
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  return true;
+}
+
 async function writeLoginDebug(page, reason) {
   await fs.mkdir(ARTIFACTS_DIR, { recursive: true });
   const debug = await page.evaluate(message => {
@@ -55,6 +82,20 @@ async function writeLoginDebug(page, reason) {
       reason: message,
       url: window.location.href,
       title: document.title,
+      alerts: Array.from(document.querySelectorAll('.alert,.error,.errors,.message,#msg,[role="alert"]'))
+        .map(el => clean(el.textContent).slice(0, 300))
+        .filter(Boolean),
+      visibleActions: Array.from(document.querySelectorAll('a,button,input[type="submit"],input[type="button"]'))
+        .filter(el => Boolean(el.offsetWidth || el.offsetHeight || el.getClientRects().length))
+        .map(el => ({
+          tag: el.tagName.toLowerCase(),
+          type: el.getAttribute('type') || '',
+          href: el.getAttribute('href') || '',
+          id: el.id || '',
+          name: el.getAttribute('name') || '',
+          text: clean(el.textContent || el.getAttribute('value') || '').slice(0, 120)
+        }))
+        .slice(0, 40),
       forms: Array.from(document.forms).map((form, formIndex) => ({
         formIndex,
         action: form.getAttribute('action') || '',
@@ -89,18 +130,21 @@ async function loginIfNeeded(page) {
     await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
   }
 
-  for (let attempt = 1; attempt <= 4; attempt++) {
-    console.log(`Login attempt ${attempt}: ${await page.title().catch(() => page.url())}`);
-    const passwordInput = await visibleLocator(page, [
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const title = await page.title().catch(() => page.url());
+    console.log(`Login attempt ${attempt}: ${title} (${page.url()})`);
+
+    let passwordInput = await visibleLocator(page, [
       '#password',
+      '[name="password"]',
       'input[type="password"]',
       'input[name*="pass" i]',
       'input[id*="pass" i]'
     ]);
-    const usernameInput = await visibleLocator(page, [
+    let usernameInput = await visibleLocator(page, [
       '#username',
+      '[name="username"]',
       'input[type="email"]',
-      'input[name="username"]',
       'input[name="user"]',
       'input[name="j_username"]',
       'input[name*="user" i]',
@@ -112,17 +156,29 @@ async function loginIfNeeded(page) {
       'input[type="text"]'
     ]);
 
-    if (usernameInput) await usernameInput.fill(username);
-    if (passwordInput) await passwordInput.fill(password);
+    if (!usernameInput) {
+      usernameInput = page.getByLabel(/user|login|webcentral|email/i).first();
+      if (!(await usernameInput.isVisible().catch(() => false))) usernameInput = null;
+    }
+    if (!passwordInput) {
+      passwordInput = page.getByLabel(/password/i).first();
+      if (!(await passwordInput.isVisible().catch(() => false))) passwordInput = null;
+    }
 
     if (!usernameInput && !passwordInput) {
       if (await isOnEventOrCalendarPage(page)) return;
-      await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      if (!(await clickOptionalLoginLink(page))) {
+        await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
+      }
       continue;
     }
 
+    if (usernameInput) await fillAndSignal(usernameInput, username);
+    if (passwordInput) await fillAndSignal(passwordInput, password);
+
     const submit = await visibleLocator(page, [
       '#submit',
+      'button[name="submit"]',
       'input[name="submit"]',
       'button[type="submit"]',
       'input[type="submit"]',
@@ -141,12 +197,22 @@ async function loginIfNeeded(page) {
         submit.click()
       ]);
     } else if (passwordInput) {
-      await passwordInput.press('Enter');
+      await Promise.all([
+        page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {}),
+        passwordInput.press('Enter')
+      ]);
     } else if (usernameInput) {
-      await usernameInput.press('Enter');
+      await Promise.all([
+        page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {}),
+        usernameInput.press('Enter')
+      ]);
     }
 
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    if (/\/cas\/login/i.test(page.url())) {
+      const errorText = await page.locator('.alert,.error,.errors,#msg,[role="alert"]').first().textContent({ timeout: 1000 }).catch(() => '');
+      if (errorText) console.log(`CAS page message: ${String(errorText).replace(/\s+/g, ' ').trim().slice(0, 200)}`);
+    }
     if (/\/cas\/brooklyn|\/webapp\/auth\/login/i.test(page.url())) {
       await page.waitForURL(/clubs\.brooklyn\.cuny\.edu/i, { timeout: 15000 }).catch(() => {});
     }
