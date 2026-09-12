@@ -492,15 +492,31 @@ function dataUrlToBuffer(dataUrl) {
   };
 }
 
-async function compressFlyerImages(page, flyerUrl) {
-  return page.evaluate(async ({ url, fullMaxPx, fullQuality, iconSizePx }) => {
-    const response = await fetch(url, { credentials: 'include' });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const sourceBlob = await response.blob();
-    if (!/^image\/(jpeg|png|webp|gif)/i.test(sourceBlob.type || '')) {
-      throw new Error(`Unexpected content type ${sourceBlob.type || 'unknown'}`);
+async function fetchFlyerSource(page, flyerUrl) {
+  const response = await page.request.get(flyerUrl, {
+    timeout: REQUEST_TIMEOUT_MS,
+    headers: {
+      Accept: 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'
     }
+  });
+  if (!response.ok()) throw new Error(`flyer download HTTP ${response.status()}`);
 
+  const contentType = (response.headers()['content-type'] || 'image/jpeg').split(';')[0].trim();
+  if (!/^image\/(jpeg|jpg|png|webp|gif)/i.test(contentType)) {
+    throw new Error(`Unexpected flyer content type ${contentType || 'unknown'}`);
+  }
+
+  const body = await response.body();
+  return {
+    dataUrl: `data:${contentType};base64,${body.toString('base64')}`,
+    bytes: body.length,
+    contentType
+  };
+}
+
+async function compressFlyerImages(page, flyerSource) {
+  return page.evaluate(async ({ dataUrl, sourceBytes, sourceContentType, fullMaxPx, fullQuality, iconSizePx }) => {
+    const sourceBlob = await fetch(dataUrl).then(response => response.blob());
     const bitmap = await createImageBitmap(sourceBlob);
     const render = async (maxPx, quality) => {
       const scale = Math.min(1, maxPx / Math.max(bitmap.width, bitmap.height));
@@ -540,12 +556,15 @@ async function compressFlyerImages(page, flyerUrl) {
     const icon = renderIcon();
     bitmap.close?.();
     return {
-      sourceBytes: sourceBlob.size,
+      sourceBytes,
+      sourceContentType,
       full,
       icon
     };
   }, {
-    url: flyerUrl,
+    dataUrl: flyerSource.dataUrl,
+    sourceBytes: flyerSource.bytes,
+    sourceContentType: flyerSource.contentType,
     fullMaxPx: FULL_FLYER_MAX_PX,
     fullQuality: FULL_FLYER_QUALITY,
     iconSizePx: ICON_SIZE_PX
@@ -570,16 +589,24 @@ async function uploadFlyerIfAvailable(page, event) {
   if (!event.flyer || dryRun) return event;
 
   try {
-    const compressed = await compressFlyerImages(page, event.flyer);
+    const sourceUrl = event.flyer;
+    const flyerSource = await fetchFlyerSource(page, sourceUrl);
+    const compressed = await compressFlyerImages(page, flyerSource);
     const full = await uploadStorageData(`events/${event.eventId}/flyer.jpg`, compressed.full.dataUrl);
-    const icon = await uploadStorageData(`events/${event.eventId}/flyerIcon.png`, compressed.icon.dataUrl);
     event.flyer = full.url;
     event.flyerPath = full.path;
-    event.flyerIcon = icon.url;
-    event.flyerIconPath = icon.path;
-    console.log(`Compressed flyer for ${event.eventId}: ${compressed.sourceBytes} -> ${full.bytes} bytes, icon ${icon.bytes} bytes`);
+    console.log(`Uploaded compressed flyer for ${event.eventId}: ${compressed.sourceBytes} ${compressed.sourceContentType} -> ${full.bytes} bytes at ${full.path}`);
+
+    try {
+      const icon = await uploadStorageData(`events/${event.eventId}/flyerIcon.png`, compressed.icon.dataUrl);
+      event.flyerIcon = icon.url;
+      event.flyerIconPath = icon.path;
+      console.log(`Uploaded flyer icon for ${event.eventId}: ${icon.bytes} bytes at ${icon.path}`);
+    } catch (iconErr) {
+      console.warn(`Flyer icon upload failed for ${event.eventId}: ${iconErr.message.split('\n')[0]}`);
+    }
   } catch (err) {
-    console.warn(`Flyer upload skipped for ${event.eventId}: ${err.message.split('\n')[0]}`);
+    console.warn(`Flyer download/compression/upload failed for ${event.eventId}: ${err.message.split('\n')[0]}`);
   }
 
   return event;
