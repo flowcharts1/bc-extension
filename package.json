@@ -1,0 +1,12 @@
+{
+  "name": "bc-brooklyn-importer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "scrape:clubs": "node scripts/scrape-clubs-events.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}

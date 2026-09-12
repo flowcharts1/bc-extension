@@ -1,0 +1,6 @@
+.auth/
+artifacts/
+playwright-report/
+test-results/
+node_modules/
+npm-debug.log*

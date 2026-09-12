@@ -1,0 +1,41 @@
+name: Scrape Clubs Events
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '15 10 * * *'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Scrape CampusGroups events
+        env:
+          BC_WEBCENTRAL_USERNAME: ${{ secrets.BC_WEBCENTRAL_USERNAME }}
+          BC_WEBCENTRAL_PASSWORD: ${{ secrets.BC_WEBCENTRAL_PASSWORD }}
+        run: npm run scrape:clubs
+
+      - name: Upload debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-debug
+          path: artifacts/
+          if-no-files-found: ignore
