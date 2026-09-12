@@ -16,6 +16,7 @@ const FIREBASE_CONFIG = {
 const DEFAULT_FEED_URL = 'https://www.clubs.brooklyn.cuny.edu/mobile_ws/v17/mobile_calendar.aspx';
 const DEFAULT_EVENT_URL_TEMPLATE = 'https://www.clubs.brooklyn.cuny.edu/usg/rsvp_boot?id={id}';
 const DEFAULT_LOGIN_URL = 'https://www.clubs.brooklyn.cuny.edu/webapp/auth/login?redirect=%2Fcalendar';
+const DEFAULT_EVENTS_URL = 'https://www.clubs.brooklyn.cuny.edu/events';
 const AUTH_STATE_PATH = path.resolve('.auth', 'webcentral-storage-state.json');
 const ARTIFACTS_DIR = path.resolve('artifacts');
 const MAX_ACTION_EVENTS = 15;
@@ -31,6 +32,7 @@ const authToken = process.env.FIREBASE_AUTH_TOKEN || '';
 const feedUrl = process.env.BC_MOBILE_CALENDAR_URL || DEFAULT_FEED_URL;
 const eventUrlTemplate = process.env.BC_EVENT_URL_TEMPLATE || DEFAULT_EVENT_URL_TEMPLATE;
 const loginUrl = process.env.BC_LOGIN_URL || DEFAULT_LOGIN_URL;
+const eventsUrl = process.env.BC_EVENTS_URL || DEFAULT_EVENTS_URL;
 const limitArg = Number(getArgValue('--limit')) || MAX_ACTION_EVENTS;
 const limit = Math.min(Math.max(limitArg, 1), MAX_ACTION_EVENTS);
 const dryRun = process.argv.includes('--dry-run') || process.env.DRY_RUN === '1';
@@ -75,6 +77,14 @@ function hasNativeFlyerUrl(value) {
 
 function eventPageUrl(id) {
   return eventUrlTemplate.replace('{id}', encodeURIComponent(String(id)));
+}
+
+function isExternalUrl(value) {
+  try {
+    return !/clubs\.brooklyn\.cuny\.edu$/i.test(new URL(value).hostname);
+  } catch (_) {
+    return false;
+  }
 }
 
 function getStarttimeFromTimeText(value) {
@@ -196,7 +206,9 @@ async function isLoggedInEventPage(page) {
   return page.evaluate(() => Boolean(
     document.querySelector('.rsvp__event-name') ||
     document.querySelector('#event_main_card') ||
-    document.querySelector('#event_details')
+    document.querySelector('#event_details') ||
+    document.querySelector('li[id^="event_"]') ||
+    document.querySelector('a[href*="/rsvp_boot"][href*="id="]')
   )).catch(() => false);
 }
 
@@ -419,6 +431,18 @@ async function parseEventPage(page, sourceUrl) {
   }, sourceUrl);
 }
 
+async function collectListingFlyers(page) {
+  return page.evaluate(() => {
+    const out = [];
+    for (const item of document.querySelectorAll('li[id^="event_"]')) {
+      const id = String(item.id || '').replace(/^event_/, '');
+      const img = item.querySelector('img[src*="/upload/"]');
+      if (id && img) out.push([id, new URL(img.getAttribute('src') || img.src, location.href).href]);
+    }
+    return out;
+  }).catch(() => []);
+}
+
 function dateFromRaw(rawDate) {
   const text = decodeEntities(rawDate);
   const match = text.match(/(?:\w+,\s*)?(\w+)\s*(\d{1,2}),\s*(\d{4})/);
@@ -443,12 +467,12 @@ function roomFromFeed(evt) {
   ].filter(Boolean).join(', '));
 }
 
-function mergeEvent(feedEvent, pageEvent) {
+function mergeEvent(feedEvent, pageEvent = {}, options = {}) {
   const cgId = String(feedEvent.id);
-  const sourceUrl = eventPageUrl(cgId);
+  const sourceUrl = options.sourceUrl || eventPageUrl(cgId);
   const date = feedEvent.eventDateStr || dateFromRaw(pageEvent.rawDate || feedEvent.eventDate);
   const time = decodeEntities(pageEvent.time || [feedEvent.startTime, feedEvent.endTime].filter(Boolean).join(' - '));
-  const flyerUrl = absoluteUrl(pageEvent.flyerUrl || feedEvent.eventFlyer || '', sourceUrl);
+  const flyerUrl = absoluteUrl(pageEvent.flyerUrl || options.flyerUrl || feedEvent.eventFlyer || '', sourceUrl);
   const event = {
     eventId: `c_${cgId}`,
     cgId,
@@ -465,7 +489,7 @@ function mergeEvent(feedEvent, pageEvent) {
     flyerPath: '',
     flyerIcon: '',
     flyerIconPath: '',
-    links: [{ label: 'Register/Info', url: sourceUrl }],
+    links: [{ label: 'Register/Info', url: options.linkUrl || sourceUrl }],
     confirmed: 1
   };
   return event;
@@ -907,6 +931,16 @@ async function main() {
     .sort((a, b) => feedEventSortKey(a).localeCompare(feedEventSortKey(b)))
     .slice(0, limit);
   console.log(`Selected next ${selected.length} new events. Existing c_ events are ignored. Hard cap is ${MAX_ACTION_EVENTS}.`);
+  if (!selected.length) {
+    await fs.mkdir(ARTIFACTS_DIR, { recursive: true });
+    await fs.writeFile(
+      path.join(ARTIFACTS_DIR, 'scrape-summary.json'),
+      JSON.stringify({ dryRun, selected: 0, uploaded: 0, failed: [] }, null, 2) + '\n',
+      'utf8'
+    );
+    console.log('No new club events to upload.');
+    return;
+  }
 
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext();
@@ -915,21 +949,31 @@ async function main() {
   const failed = [];
 
   try {
-    const firstUrl = eventPageUrl(selected[0].id);
     console.log(`Opening ${loginUrl}`);
     await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await loginIfNeeded(page, firstUrl);
+    await loginIfNeeded(page, eventsUrl);
     await fs.mkdir(path.dirname(AUTH_STATE_PATH), { recursive: true });
     await context.storageState({ path: AUTH_STATE_PATH });
     console.log(`Saved browser session state to ${AUTH_STATE_PATH}`);
+
+    await page.goto(eventsUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await loginIfNeeded(page, eventsUrl);
+    const listingFlyers = new Map(await collectListingFlyers(page));
+    console.log(`Cached ${listingFlyers.size} flyer URLs from ${eventsUrl}.`);
 
     for (const [index, feedEvent] of selected.entries()) {
       const sourceUrl = eventPageUrl(feedEvent.id);
       try {
         await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        await loginIfNeeded(page, sourceUrl);
-        const pageEvent = await parseEventPage(page, sourceUrl);
-        const event = mergeEvent(feedEvent, pageEvent);
+        const finalUrl = page.url();
+        const redirectedExternally = isExternalUrl(finalUrl);
+        if (!redirectedExternally) await loginIfNeeded(page, sourceUrl);
+        const pageEvent = redirectedExternally ? {} : await parseEventPage(page, sourceUrl);
+        const event = mergeEvent(feedEvent, pageEvent, {
+          flyerUrl: listingFlyers.get(String(feedEvent.id)) || '',
+          linkUrl: redirectedExternally ? finalUrl : sourceUrl,
+          sourceUrl
+        });
         if (!hasNativeFlyerUrl(event.flyer)) {
           event.flyer = '';
           event.flyerPath = '';
