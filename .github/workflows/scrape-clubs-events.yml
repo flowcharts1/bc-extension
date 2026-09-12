@@ -30,12 +30,14 @@ jobs:
         env:
           BC_WEBCENTRAL_USERNAME: ${{ secrets.BC_WEBCENTRAL_USERNAME }}
           BC_WEBCENTRAL_PASSWORD: ${{ secrets.BC_WEBCENTRAL_PASSWORD }}
-        run: npm run scrape:clubs
+        run: npm run scrape:clubs -- --limit=15
 
       - name: Upload debug artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scrape-debug
-          path: artifacts/
+          path: |
+            artifacts/
+            .auth/
           if-no-files-found: ignore
