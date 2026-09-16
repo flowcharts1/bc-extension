@@ -86,6 +86,14 @@ function lookupAliases(value) {
   return [...aliases].filter(Boolean);
 }
 
+function campusGroupsIdFromData(data) {
+  const direct = normalize(data?.campusGroupsClubId || data?.sourceId || data?.campusGroupsId);
+  if (direct) return direct;
+  const sourceUrl = normalize(data?.sourceUrl || data?.website || data?.['org-website']);
+  const match = sourceUrl.match(/[?&]club_id=([^&#]+)/i);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
 function firestoreValue(value) {
   if (value === null || value === undefined) return { nullValue: null };
   if (typeof value === 'boolean') return { booleanValue: value };
@@ -206,12 +214,12 @@ function buildClubLookup(clubDocs) {
   const lookup = new Map();
   for (const doc of clubDocs) {
     const data = { ...(doc.data || {}), _docId: doc.id };
+    const campusGroupsId = campusGroupsIdFromData(data);
     const names = [
       doc.id,
       data.name,
       data.clubId,
-      data.campusGroupsClubId,
-      data.sourceId,
+      campusGroupsId,
       data.title,
       data.groupName
     ];
@@ -225,8 +233,8 @@ function buildClubLookup(clubDocs) {
 }
 
 function findExistingClub(club, lookup) {
-  return lookupAliases(club.name).map(key => lookup.get(key)).find(Boolean) ||
-    lookup.get(canonicalName(club.campusGroupsClubId));
+  return lookup.get(canonicalName(club.campusGroupsClubId)) ||
+    lookupAliases(club.name).map(key => lookup.get(key)).find(Boolean);
 }
 
 async function fetchPublicClubList(browser) {
