@@ -29,15 +29,15 @@ The club status workflow reads the public all-clubs page first:
 `https://www.clubs.brooklyn.cuny.edu/club_signup?view=all&`
 
 It ignores departments, compares remaining clubs to the Firebase `clubs`
-collection, and writes `flag: "active"` or `flag: "inactive"` on matched clubs.
-Clubs with `Group Not Registered Yet` are inactive unless they also show
-`Pending Approval`, which stays active. If two-thirds or more clubs are not
-registered yet, the run skips all Firebase flagging for safety.
+collection, and writes `flag`, `active`, and `inactive` on matched clubs.
+Clubs with `Group Not Registered Yet` are inactive even if they also show
+`Pending Approval`. If two-thirds or more clubs are not registered yet, the run
+skips all Firebase status updates for safety.
 
-For existing clubs, the only normal update is `flag`. If an active club has an
-empty or missing Firebase description and the public list has a mission, the
-mission is copied into `description`. Descriptions containing any text,
-including a single space, are left alone.
+For existing clubs, the normal update is `flag`, `active`, and `inactive`. If
+an active club has an empty or missing Firebase description and the public list
+has a mission, the mission is copied into `description`. Descriptions
+containing any text, including a single space, are left alone.
 
 New clubs get a Firebase club doc using the official club name, the
 `campusGroupsClubId`, `sourceUrl`, mission description, social media links,

@@ -247,7 +247,8 @@ async function fetchPublicClubList(browser) {
       const rowText = clean(row.textContent || '');
       const groupNotRegistered = badges.some(text => /group not registered yet/i.test(text)) || /group not registered yet/i.test(rowText);
       const pendingApproval = badges.some(text => /pending approval/i.test(text)) || /pending approval/i.test(rowText);
-      const flag = groupNotRegistered && !pendingApproval ? 'inactive' : 'active';
+      const active = !groupNotRegistered;
+      const flag = active ? 'active' : 'inactive';
       const img = row.querySelector('.media-left img');
       const logoUrl = img ? new URL(img.getAttribute('src') || img.src, sourceListUrl).href : '';
       const sourceUrl = campusGroupsClubId
@@ -267,6 +268,7 @@ async function fetchPublicClubList(browser) {
         isDepartment,
         groupNotRegistered,
         pendingApproval,
+        active,
         flag,
         mission,
         listLogoUrl: logoUrl,
@@ -621,7 +623,7 @@ async function main() {
     const inactiveRatio = clubs.length ? inactiveCount / clubs.length : 0;
 
     console.log(`Found ${publicRows.length} public groups: ${clubs.length} clubs, ${departments} departments ignored.`);
-    console.log(`${inactiveCount}/${clubs.length} clubs (${Math.round(inactiveRatio * 100)}%) are "Group Not Registered Yet" without Pending Approval.`);
+    console.log(`${inactiveCount}/${clubs.length} clubs (${Math.round(inactiveRatio * 100)}%) have "Group Not Registered Yet".`);
 
     if (!clubs.length) throw new Error('No non-department clubs found on the public CampusGroups list.');
     if (inactiveRatio >= INACTIVE_ABORT_RATIO) {
@@ -646,8 +648,8 @@ async function main() {
     let created = 0;
 
     for (const { club, match } of existing) {
-      const updates = { flag: club.flag };
-      const fields = ['flag'];
+      const updates = { flag: club.flag, active: club.active, inactive: !club.active };
+      const fields = ['flag', 'active', 'inactive'];
       if (club.flag === 'active' && (match.data.description === '' || typeof match.data.description === 'undefined') && club.mission) {
         updates.description = club.mission;
         fields.push('description');
