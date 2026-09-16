@@ -20,7 +20,6 @@ const ARTIFACTS_DIR = path.resolve('artifacts');
 const PAGE_SIZE = 300;
 const REQUEST_TIMEOUT_MS = Number(getArgValue('--timeout-ms')) || 45000;
 const ICON_SIZE_PX = 160;
-const INACTIVE_ABORT_RATIO = 2 / 3;
 
 const username = process.env.BC_WEBCENTRAL_USERNAME || '';
 const password = process.env.BC_WEBCENTRAL_PASSWORD || '';
@@ -626,11 +625,7 @@ async function main() {
     console.log(`${inactiveCount}/${clubs.length} clubs (${Math.round(inactiveRatio * 100)}%) have "Group Not Registered Yet".`);
 
     if (!clubs.length) throw new Error('No non-department clubs found on the public CampusGroups list.');
-    if (inactiveRatio >= INACTIVE_ABORT_RATIO) {
-      console.log('At least two-thirds of clubs are not registered yet; skipping all Firebase flag updates for this run.');
-      summary = { dryRun, skipped: true, reason: 'inactive-ratio-threshold', publicRows: publicRows.length, clubs: clubs.length, departments, inactiveCount };
-      return;
-    }
+    if (inactiveRatio >= 2 / 3) console.log('At least two-thirds of clubs are not registered yet; continuing so Firebase active/inactive fields reflect CampusGroups.');
 
     const lookup = buildClubLookup(existingClubDocs);
     const existing = [];
@@ -673,8 +668,8 @@ async function main() {
         icon: about.icon?.url || '',
         iconPath: about.icon?.path || '',
         flag: club.flag,
-        active: club.flag === 'active',
-        inactive: club.flag === 'inactive',
+        active: club.active,
+        inactive: !club.active,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString()
       };

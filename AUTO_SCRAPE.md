@@ -31,8 +31,8 @@ The club status workflow reads the public all-clubs page first:
 It ignores departments, compares remaining clubs to the Firebase `clubs`
 collection, and writes `flag`, `active`, and `inactive` on matched clubs.
 Clubs with `Group Not Registered Yet` are inactive even if they also show
-`Pending Approval`. If two-thirds or more clubs are not registered yet, the run
-skips all Firebase status updates for safety.
+`Pending Approval`. Even if most clubs are not registered yet, the run still
+updates Firebase status fields so the website reflects CampusGroups.
 
 For existing clubs, the normal update is `flag`, `active`, and `inactive`. If
 an active club has an empty or missing Firebase description and the public list
