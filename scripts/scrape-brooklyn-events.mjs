@@ -249,11 +249,11 @@ function venueSlugText(evt) {
 }
 
 function isCampusEvent(evt) {
-  const place = venueSlugText(evt);
+  const place = `${venueSlugText(evt)} ${venueText(evt)}`;
   if (evt.is_virtual || evt.virtual_url || /\b(online|virtual|zoom|webinar|webex|teams)\b/i.test(place)) return false;
   const venue = venueText(evt);
   if (!venue) return false;
-  return /brooklyn college|2900 bedford|bedford ave|brooklyn,\s*ny|boylan|ingerson|ingersoll|whitehead|west quad|library|roosevelt|tow center|student center|whitman|gershwin|new ingersoll|plaza|gymnasium|quad|cafeteria|cafe|tow center/i.test(venue);
+  return true;
 }
 
 function isUpcoming(evt) {
