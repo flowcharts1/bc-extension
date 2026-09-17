@@ -649,10 +649,20 @@ async function main() {
     let patched = 0;
     let descriptionsPatched = 0;
     let created = 0;
+    const statusChanges = [];
 
     for (const { club, match } of existing) {
       const updates = { flag: club.flag, active: club.active, inactive: !club.active };
       const fields = ['flag', 'active', 'inactive'];
+      if (match.data.flag !== updates.flag || match.data.active !== updates.active || match.data.inactive !== updates.inactive) {
+        statusChanges.push({
+          docId: match.id,
+          name: match.data.name || match.data.clubId || club.name,
+          campusGroupsClubId: club.campusGroupsClubId,
+          from: { flag: match.data.flag || '', active: match.data.active, inactive: match.data.inactive },
+          to: { flag: updates.flag, active: updates.active, inactive: updates.inactive }
+        });
+      }
       if (club.flag === 'active' && (match.data.description === '' || typeof match.data.description === 'undefined') && club.mission) {
         updates.description = club.mission;
         fields.push('description');
@@ -694,6 +704,8 @@ async function main() {
       inactiveCount,
       existing: existing.length,
       newClubs: newClubs.map(club => ({ name: club.name, campusGroupsClubId: club.campusGroupsClubId, flag: club.flag })),
+      statusChanged: statusChanges.length,
+      statusChanges: statusChanges.slice(0, 100),
       patched,
       descriptionsPatched,
       created

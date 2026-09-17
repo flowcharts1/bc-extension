@@ -2,6 +2,10 @@ name: Scrape Club Status
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - 'scripts/scrape-club-status.mjs'
+      - '.github/workflows/scrape-club-status.yml'
   schedule:
     - cron: '20 11 * * 1'
 
