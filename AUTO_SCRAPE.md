@@ -49,6 +49,28 @@ secrets as the club-event scraper.
 The workflow runs weekly on Mondays at `11:20 UTC`, and can also be run manually
 from Actions -> Scrape Club Status -> Run workflow.
 
+## Weekly Biology Seminar Scrape
+
+The Biology seminar workflow reads:
+
+`https://www.brooklyn.edu/biology/seminars/`
+
+It only parses the Upcoming Seminars section, ignores rows that say
+`No seminar`, and ignores past seminar dates. Event docs use stable IDs in the
+form `bio_YYYY-MM-DD`, so a changed speaker or topic for the same seminar date
+updates the existing Firebase event instead of creating a duplicate. If a future
+seminar that was previously imported is changed to `No seminar` or disappears
+from the upcoming schedule, the workflow archives that event.
+
+The event title is always `Shirlanna Alexis Biology Seminar Series`. The
+description contains the individual seminar title on the first line and the
+speaker on the second line. The event flyer is
+`https://bcbrooklyn.com/bioseminar.png`; the event icon uses the Biology org
+icon from Firebase when available.
+
+The workflow runs weekly on Mondays at `11:15 UTC`, and can also be run
+manually from Actions -> Scrape Biology Seminars -> Run workflow.
+
 ## Local Test
 
 Use Node 20 or newer.
@@ -65,6 +87,12 @@ For the weekly club status scraper:
 
 ```powershell
 npm run scrape:club-status -- --dry-run
+```
+
+For the weekly Biology seminar scraper:
+
+```powershell
+npm run scrape:biology -- --dry-run
 ```
 
 Optional:
