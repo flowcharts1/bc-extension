@@ -63,9 +63,9 @@ seminar that was previously imported is changed to `No seminar` or disappears
 from the upcoming schedule, the workflow archives that event.
 
 The event title is always `Shirlanna Alexis Biology Seminar Series`. The
-description contains the individual seminar title on the first line and the
-speaker on the second line. The event flyer is
-`https://bcbrooklyn.com/bioseminar.png`; the event icon uses the Biology org
+description starts with the Biology Seminar Series blurb, then `This lecture's
+title is: "..."`, then the speaker on the next line. The event flyer is
+`https://bcbrooklyn.com/images/bioseminar.png`; the event icon uses the Biology org
 icon from Firebase when available.
 
 The workflow runs weekly on Mondays at `11:15 UTC`, and can also be run

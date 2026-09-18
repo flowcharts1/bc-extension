@@ -14,8 +14,9 @@ const FIREBASE_CONFIG = {
 
 const DEFAULT_PAGE_URL = 'https://www.brooklyn.edu/biology/seminars/';
 const SERIES_TITLE = 'Shirlanna Alexis Biology Seminar Series';
-const FLYER_URL = 'https://bcbrooklyn.com/bioseminar.png';
-const FLYER_PATH = 'bioseminar.png';
+const DESCRIPTION_INTRO = 'The Biology Seminar Series at Brooklyn College brings together leading scientists, faculty, and students to explore cutting-edge research across the biological sciences.';
+const FLYER_URL = 'https://bcbrooklyn.com/images/bioseminar.png';
+const FLYER_PATH = 'images/bioseminar.png';
 const ARTIFACTS_DIR = path.resolve('artifacts');
 const PAGE_SIZE = 300;
 const REQUEST_TIMEOUT_MS = Number(getArgValue('--timeout-ms')) || 45000;
@@ -355,7 +356,7 @@ function buildEvent(seminar, biologyOrg) {
     starttime: '1230',
     room: '113 Ingersoll Hall Extension',
     type: 'brooklyn event',
-    description: `"${seminar.seminarTitle}"\nby ${seminar.speaker}`,
+    description: `${DESCRIPTION_INTRO}\nThis lecture's title is: "${seminar.seminarTitle}"\n${seminar.speaker}`,
     club: orgName,
     clubId: orgId,
     org: orgName,
@@ -363,7 +364,7 @@ function buildEvent(seminar, biologyOrg) {
     'org-website': orgData.website || orgData['org-website'] || DEFAULT_PAGE_URL,
     flyer: FLYER_URL,
     flyerPath: FLYER_PATH,
-    flyerIcon: orgData.icon || FLYER_URL,
+    flyerIcon: orgData.icon || '',
     flyerIconPath: orgData.iconPath || '',
     links: [
       { label: seminar.speaker, url: seminar.speakerUrl },
