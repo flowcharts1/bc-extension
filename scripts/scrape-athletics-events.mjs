@@ -215,8 +215,22 @@ function formatTime(evt) {
   return normalize(evt.time).replace(/\s+/g, ' ');
 }
 
+function starttimeFromDisplay(value) {
+  const match = normalize(value).match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$/i);
+  if (!match) return null;
+  let hours = Number(match[1]);
+  const minutes = match[2] || '00';
+  const meridiem = (match[3] || '').toUpperCase();
+  if (meridiem) {
+    if (hours === 12) hours = 0;
+    if (meridiem === 'PM') hours += 12;
+  }
+  return `${String(hours).padStart(2, '0')}${minutes}`;
+}
+
 function cleanSportsLocation(value) {
   return normalize(normalize(value)
+    .replace(/\s*\(\s*Brooklyn College Campus\s*\)/gi, '')
     .replace(/\s*\([^)]*\bNY\b[^)]*\)/gi, '')
     .replace(/\s*,\s*NY\b/gi, ''));
 }
@@ -251,6 +265,31 @@ function eventTitle(evt) {
   return `${sport} vs ${opponentName(evt)}`;
 }
 
+function gameStatus(evt) {
+  const status = normalize(evt.status).toUpperCase();
+  const note = stripHtml(evt.noplay_text || evt.promotion || '');
+  if (status === 'C' || /\bcancel(?:led|ed)\b/i.test(note)) return 'cancelled';
+  if (status === 'P' || /\bpostponed\b/i.test(note)) return 'postponed';
+  return 'active';
+}
+
+function postponedSchedule(evt) {
+  const note = stripHtml(evt.noplay_text || evt.promotion || '');
+  if (/\bTBA\b|\bTBD\b/i.test(note)) return { tba: true };
+  const match = note.match(/\b(?:postponed\s*[-:–—]?\s*)?([A-Z][a-z]{2,8})\.?\s+(\d{1,2})(?:,?\s+(\d{4}))?(?:\s*[|,·-]\s*(\d{1,2}(?::\d{2})?\s*(?:a\.?m\.?|p\.?m\.?)))?/i);
+  if (!match) return { tba: true };
+  const months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'];
+  const month = months.findIndex(value => value === match[1].slice(0, 3).toLowerCase());
+  if (month < 0) return { tba: true };
+  const originalDate = eventDateKey(evt);
+  const year = Number(match[3] || originalDate.slice(0, 4));
+  const date = new Date(Date.UTC(year, month, Number(match[2])));
+  if (date.getUTCMonth() !== month || date.getUTCDate() !== Number(match[2])) return { tba: true };
+  let time = normalize(match[4] || evt.time || '');
+  if (match[4]) time = time.replace(/\s+/g, '').replace(/a\.?m\.?/i, 'AM').replace(/p\.?m\.?/i, 'PM');
+  return { date: date.toISOString().slice(0, 10), time };
+}
+
 function isHomeGame(evt) {
   return normalize(evt.location_indicator).toUpperCase() === 'H';
 }
@@ -260,25 +299,22 @@ function isUpcoming(evt) {
   return date >= todayInNewYork() && date <= maxPostingDate();
 }
 
-function isActiveGame(evt) {
-  const status = normalize(evt.status).toUpperCase();
-  return status !== 'C' && status !== 'P';
+function buildExistingEventMap(eventDocs) {
+  return new Map(eventDocs
+    .filter(doc => doc.data.orgId === 'athletics' || doc.data.clubId === 'athletics' || doc.id.startsWith('a_'))
+    .map(doc => [normalize(doc.data.eventId || doc.id), doc]));
 }
 
-function buildExistingIdSet(eventDocs) {
-  return new Set(eventDocs.map(doc => normalize(doc.data.eventId || doc.id)).filter(Boolean));
-}
-
-function mergeEvent(evt) {
+function mergeEvent(evt, overrides = {}) {
   const imageUrl = sportImageUrl(evt);
   const imagePath = sportImagePath(evt);
   return {
     eventId: `a_${evt.id}`,
     athleticsId: String(evt.id || ''),
-    title: eventTitle(evt),
-    date: eventDateKey(evt),
-    time: formatTime(evt),
-    starttime: starttime(evt),
+    title: `${gameStatus(evt) === 'cancelled' ? 'CANCELLED ' : ''}${eventTitle(evt)}`,
+    date: overrides.date || eventDateKey(evt),
+    time: overrides.time || formatTime(evt),
+    starttime: overrides.date ? (starttimeFromDisplay(overrides.time) || starttime(evt)) : starttime(evt),
     room: cleanSportsLocation(evt.location),
     type: 'sports game',
     description: stripHtml(evt.noplay_text || evt.promotion || ''),
@@ -313,33 +349,83 @@ async function uploadEvent(event) {
   });
 }
 
+async function updateEventSchedule(eventId, values) {
+  const url = new URL(firestoreDocumentUrl('events', eventId));
+  for (const key of Object.keys(values)) url.searchParams.append('updateMask.fieldPaths', key);
+  await requestJson(url.toString(), {
+    method: 'PATCH',
+    body: JSON.stringify({ fields: firestoreFields(values) }),
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+async function deleteEvent(eventId) {
+  await requestBuffer(firestoreDocumentUrl('events', eventId), { method: 'DELETE' });
+}
+
 async function main() {
   console.log('Reading Brooklyn College Athletics games across each month through the posting window');
   const [{ events: rawEvents, urls }, existingEvents] = await Promise.all([
     fetchAthleticsEvents(),
     fetchCollection('events')
   ]);
-  const existingIds = buildExistingIdSet(existingEvents);
+  const existingById = buildExistingEventMap(existingEvents);
   const candidates = rawEvents
     .filter(evt => evt && evt.id)
     .filter(isHomeGame)
-    .filter(isUpcoming)
-    .filter(isActiveGame)
-    .filter(evt => !existingIds.has(`a_${evt.id}`))
+    .filter(evt => isUpcoming(evt) || existingById.has(`a_${evt.id}`))
     .sort((a, b) => {
       const dateCompare = normalize(a.date).localeCompare(normalize(b.date));
       if (dateCompare) return dateCompare;
       return sportOrderIndex(a) - sportOrderIndex(b);
-    })
-    .slice(0, limit);
+    });
 
-  console.log(`JSON returned ${rawEvents.length} games. Selected ${candidates.length} new upcoming home games. Away games and existing a_ events are ignored.`);
+  console.log(`JSON returned ${rawEvents.length} games. Reconciling ${candidates.length} upcoming home games and existing athletics events.`);
 
   const uploaded = [];
   const failed = [];
+  let newEventCount = 0;
   for (const [index, evt] of candidates.entries()) {
     try {
+      const eventId = `a_${evt.id}`;
+      const existing = existingById.get(eventId);
+      const status = gameStatus(evt);
+      if (status === 'postponed') {
+        const schedule = postponedSchedule(evt);
+        if (schedule.tba) {
+          if (existing && !dryRun) await deleteEvent(eventId);
+          console.log(`[${index + 1}/${candidates.length}] ${dryRun ? 'DRY RUN would delete' : 'Deleted'} ${eventId}: postponed date is TBA`);
+          continue;
+        }
+        const event = mergeEvent(evt, schedule);
+        if (existing) {
+          if (!dryRun) await updateEventSchedule(eventId, { date: event.date, time: event.time, starttime: event.starttime, title: event.title });
+          console.log(`[${index + 1}/${candidates.length}] ${dryRun ? 'DRY RUN would reschedule' : 'Rescheduled'} ${eventId}: ${event.title} to ${event.date} ${event.time}`);
+        } else if (isUpcoming({ date: event.date })) {
+          if (newEventCount >= limit) continue;
+          if (!dryRun) await uploadEvent(event);
+          console.log(`[${index + 1}/${candidates.length}] ${dryRun ? 'DRY RUN would add' : 'Added'} postponed ${eventId}: ${event.title} on ${event.date}`);
+          newEventCount += 1;
+        } else continue;
+        uploaded.push(event);
+        continue;
+      }
       const event = mergeEvent(evt);
+      if (status === 'cancelled' && existing) {
+        if (!dryRun) await updateEventSchedule(eventId, { title: event.title });
+        console.log(`[${index + 1}/${candidates.length}] ${dryRun ? 'DRY RUN would mark' : 'Marked'} ${eventId} CANCELLED`);
+        uploaded.push(event);
+        continue;
+      }
+      if (existing) {
+        if (!dryRun && status === 'active' && normalize(existing.data.title).startsWith('CANCELLED ')) {
+          await updateEventSchedule(eventId, { title: event.title, date: event.date, time: event.time, starttime: event.starttime });
+          console.log(`[${index + 1}/${candidates.length}] Restored ${eventId}: ${event.title}`);
+        }
+        continue;
+      }
+      if (!isUpcoming(evt)) continue;
+      if (newEventCount >= limit) continue;
       if (dryRun) {
         console.log(`[${index + 1}/${candidates.length}] DRY RUN ${event.eventId}: ${event.title} (${event.room || 'no location'})`);
       } else {
@@ -347,6 +433,7 @@ async function main() {
         console.log(`[${index + 1}/${candidates.length}] Uploaded ${event.eventId}: ${event.title} (${event.room || 'no location'})`);
       }
       uploaded.push(event);
+      newEventCount += 1;
     } catch (err) {
       failed.push({ id: evt.id, title: eventTitle(evt), error: err.message });
       console.warn(`[${index + 1}/${candidates.length}] Failed ${evt.id}: ${err.message.split('\n')[0]}`);
