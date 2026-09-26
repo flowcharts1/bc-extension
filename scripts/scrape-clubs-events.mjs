@@ -174,6 +174,29 @@ function todayInNewYork() {
   return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
+function isUpcomingStoredEvent(data = {}) {
+  const rawDate = normalize(
+    data.endDate || data.eventEndDate || data.eventEndDateStr ||
+    data.date || data.eventDate || data.eventDateStr || data.startDate
+  );
+  if (!rawDate) return false;
+
+  let eventDay = rawDate.match(/^\d{4}-\d{2}-\d{2}/)?.[0] || '';
+  if (!eventDay) {
+    const timestamp = Date.parse(rawDate);
+    if (!Number.isFinite(timestamp)) return false;
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).formatToParts(new Date(timestamp));
+    const part = type => parts.find(item => item.type === type)?.value || '';
+    eventDay = `${part('year')}-${part('month')}-${part('day')}`;
+  }
+  return eventDay >= todayInNewYork();
+}
+
 function addMonths(date, months) {
   const copy = new Date(date);
   copy.setUTCMonth(copy.getUTCMonth() + months);
@@ -949,9 +972,14 @@ async function main() {
   ]);
   const orgLookup = buildOrgLookup(clubDocs, orgDocs);
   const existingIds = buildExistingIdSet(existingEvents);
-  const existingClubEvents = existingEvents.filter(doc => normalize(doc.data.eventId || doc.id).startsWith('c_'));
+  const existingClubEvents = existingEvents.filter(doc =>
+    normalize(doc.data.eventId || doc.id).startsWith('c_') && isUpcomingStoredEvent(doc.data)
+  );
+  const skippedPastClubEvents = existingEvents.filter(doc =>
+    normalize(doc.data.eventId || doc.id).startsWith('c_') && !isUpcomingStoredEvent(doc.data)
+  ).length;
   console.log(`Feed returned ${feedEvents.length} upcoming displayable events.`);
-  console.log(`Reconciling ${existingClubEvents.length} existing CampusGroups event documents, including past events.`);
+  console.log(`Reconciling ${existingClubEvents.length} upcoming CampusGroups events; skipped ${skippedPastClubEvents} past or undated events.`);
   if (!feedEvents.length && !existingClubEvents.length) throw new Error('No upcoming feed events or existing CampusGroups events found.');
 
   const selected = [...feedEvents]
