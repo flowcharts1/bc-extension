@@ -1,6 +1,10 @@
 name: Scrape Athletics Events
 
 on:
+  push:
+    paths:
+      - '.github/workflows/scrape-athletics-events.yml'
+      - 'scripts/scrape-athletics-events.mjs'
   workflow_dispatch:
   schedule:
     - cron: '55 10 * * 1'
