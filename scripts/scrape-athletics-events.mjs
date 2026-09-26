@@ -60,20 +60,20 @@ function maxPostingDate() {
   return addMonths(new Date(`${todayInNewYork()}T00:00:00.000Z`), 2).toISOString().slice(0, 10);
 }
 
-function feedDate() {
+function feedDate(date) {
   const explicit = getArgValue('--date') || process.env.ATHLETICS_FEED_DATE || '';
-  if (explicit) return explicit;
-  const [year, month, day] = todayInNewYork().split('-');
-  return `${Number(month)}/${Number(day)}/${year}`;
+  if (explicit && !date) return explicit;
+  date ||= new Date(`${todayInNewYork()}T00:00:00.000Z`);
+  return `${date.getUTCMonth() + 1}/${date.getUTCDate()}/${date.getUTCFullYear()}`;
 }
 
-function feedUrl() {
+function feedUrl(date) {
   const explicit = getArgValue('--feed-url') || process.env.ATHLETICS_FEED_URL || '';
   const url = new URL(explicit || DEFAULT_FEED_URL);
   if (!url.searchParams.has('type')) url.searchParams.set('type', 'month');
   if (!url.searchParams.has('sport')) url.searchParams.set('sport', '0');
   if (!url.searchParams.has('location')) url.searchParams.set('location', 'all');
-  if (!url.searchParams.has('date')) url.searchParams.set('date', feedDate());
+  url.searchParams.set('date', feedDate(date));
   return url.toString();
 }
 
@@ -116,9 +116,25 @@ async function requestJson(url, options = {}) {
 }
 
 async function fetchAthleticsEvents() {
-  const days = await requestJson(feedUrl());
-  if (!Array.isArray(days)) return [];
-  return days.flatMap(day => Array.isArray(day.events) ? day.events : []);
+  const explicitDate = getArgValue('--date') || process.env.ATHLETICS_FEED_DATE || '';
+  const start = explicitDate
+    ? new Date(explicitDate.includes('/') ? `${explicitDate.split('/')[2]}-${explicitDate.split('/')[0].padStart(2, '0')}-${explicitDate.split('/')[1].padStart(2, '0')}T00:00:00.000Z` : `${explicitDate.slice(0, 10)}T00:00:00.000Z`)
+    : new Date(`${todayInNewYork()}T00:00:00.000Z`);
+  const end = new Date(`${maxPostingDate()}T00:00:00.000Z`);
+  const eventsById = new Map();
+  const urls = [];
+
+  for (let month = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), 1)); month <= end; month = new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 1))) {
+    const url = feedUrl(month);
+    urls.push(url);
+    const days = await requestJson(url);
+    if (!Array.isArray(days)) continue;
+    for (const evt of days.flatMap(day => Array.isArray(day.events) ? day.events : [])) {
+      if (evt?.id) eventsById.set(String(evt.id), evt);
+    }
+  }
+
+  return { events: [...eventsById.values()], urls };
 }
 
 function docIdFromName(name) {
@@ -298,9 +314,8 @@ async function uploadEvent(event) {
 }
 
 async function main() {
-  const url = feedUrl();
-  console.log(`Reading Brooklyn College Athletics games (${url})`);
-  const [rawEvents, existingEvents] = await Promise.all([
+  console.log('Reading Brooklyn College Athletics games across each month through the posting window');
+  const [{ events: rawEvents, urls }, existingEvents] = await Promise.all([
     fetchAthleticsEvents(),
     fetchCollection('events')
   ]);
@@ -343,7 +358,7 @@ async function main() {
     path.join(ARTIFACTS_DIR, 'scrape-athletics-summary.json'),
     JSON.stringify({
       dryRun,
-      feedUrl: url,
+      feedUrls: urls,
       rawEvents: rawEvents.length,
       selected: candidates.length,
       uploaded: uploaded.length,
