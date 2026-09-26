@@ -431,6 +431,14 @@ async function parseEventPage(page, sourceUrl) {
   }, sourceUrl);
 }
 
+async function isDeletedEventPage(page) {
+  return page.evaluate(() => {
+    const text = String(document.body?.innerText || '').replace(/\s+/g, ' ').toLowerCase();
+    const title = String(document.title || '').toLowerCase();
+    return /event (was )?not found|event (has been )?deleted|this event is no longer available|event does not exist/.test(`${title} ${text}`);
+  }).catch(() => false);
+}
+
 async function collectListingFlyers(page) {
   return page.evaluate(() => {
     const out = [];
@@ -594,6 +602,24 @@ async function fetchCollection(collectionName) {
     pageToken = page.nextPageToken || '';
   } while (pageToken);
   return docs;
+}
+
+function firestoreDocumentIdUrl(docId) {
+  return firestoreDocumentUrl(docId);
+}
+
+async function updateEventRoom(docId, room) {
+  const url = new URL(firestoreDocumentIdUrl(docId));
+  url.searchParams.set('updateMask.fieldPaths', 'room');
+  await requestJson(url.toString(), {
+    method: 'PATCH',
+    body: JSON.stringify({ fields: { room: firestoreValue(room) } }),
+    headers: { 'Content-Type': 'application/json' }
+  });
+}
+
+async function deleteEvent(docId) {
+  await requestBuffer(firestoreDocumentIdUrl(docId), { method: 'DELETE' });
 }
 
 function normalizeLookupKey(value) {
@@ -923,24 +949,17 @@ async function main() {
   ]);
   const orgLookup = buildOrgLookup(clubDocs, orgDocs);
   const existingIds = buildExistingIdSet(existingEvents);
-  console.log(`Feed returned ${feedEvents.length} upcoming displayable events. Past events are ignored and are never archived/deleted just because they disappear from the JSON feed.`);
-  if (!feedEvents.length) throw new Error('No upcoming events found in the mobile calendar feed.');
+  const existingClubEvents = existingEvents.filter(doc => normalize(doc.data.eventId || doc.id).startsWith('c_'));
+  console.log(`Feed returned ${feedEvents.length} upcoming displayable events.`);
+  console.log(`Reconciling ${existingClubEvents.length} existing CampusGroups event documents, including past events.`);
+  if (!feedEvents.length && !existingClubEvents.length) throw new Error('No upcoming feed events or existing CampusGroups events found.');
 
   const selected = [...feedEvents]
     .filter(evt => !existingIds.has(`c_${evt.id}`))
     .sort((a, b) => feedEventSortKey(a).localeCompare(feedEventSortKey(b)))
     .slice(0, limit);
   console.log(`Selected next ${selected.length} new events. Existing c_ events are ignored. Hard cap is ${MAX_ACTION_EVENTS}.`);
-  if (!selected.length) {
-    await fs.mkdir(ARTIFACTS_DIR, { recursive: true });
-    await fs.writeFile(
-      path.join(ARTIFACTS_DIR, 'scrape-summary.json'),
-      JSON.stringify({ dryRun, selected: 0, uploaded: 0, failed: [] }, null, 2) + '\n',
-      'utf8'
-    );
-    console.log('No new club events to upload.');
-    return;
-  }
+  if (!selected.length) console.log('No new club events to upload; continuing with existing-event reconciliation.');
 
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext();
@@ -960,6 +979,41 @@ async function main() {
     await loginIfNeeded(page, eventsUrl);
     const listingFlyers = new Map(await collectListingFlyers(page));
     console.log(`Cached ${listingFlyers.size} flyer URLs from ${eventsUrl}.`);
+
+    for (const [index, doc] of existingClubEvents.entries()) {
+      const eventId = normalize(doc.data.eventId || doc.id);
+      const cgId = eventId.replace(/^c_/, '');
+      const sourceUrl = eventPageUrl(cgId);
+      try {
+        const response = await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+        if (!isExternalUrl(page.url())) await loginIfNeeded(page, sourceUrl);
+        if ([404, 410].includes(response?.status()) || await isDeletedEventPage(page)) {
+          if (dryRun) console.log(`[${index + 1}/${existingClubEvents.length}] DRY RUN delete missing CampusGroups event ${eventId}`);
+          else {
+            await deleteEvent(doc.id);
+            console.log(`[${index + 1}/${existingClubEvents.length}] Deleted missing CampusGroups event ${eventId}`);
+          }
+          continue;
+        }
+        const pageEvent = await parseEventPage(page, sourceUrl);
+        if (!pageEvent.title) {
+          console.warn(`[${index + 1}/${existingClubEvents.length}] Could not verify ${eventId}; leaving Firebase unchanged.`);
+          continue;
+        }
+        const currentRoom = normalize(doc.data.room);
+        const campusGroupsRoom = decodeEntities(pageEvent.room);
+        if (currentRoom !== campusGroupsRoom) {
+          if (dryRun) console.log(`[${index + 1}/${existingClubEvents.length}] DRY RUN location ${eventId}: "${currentRoom}" -> "${campusGroupsRoom}"`);
+          else {
+            await updateEventRoom(doc.id, campusGroupsRoom);
+            console.log(`[${index + 1}/${existingClubEvents.length}] Updated location ${eventId}: "${currentRoom}" -> "${campusGroupsRoom}"`);
+          }
+        }
+      } catch (err) {
+        failed.push({ id: cgId, title: doc.data.title || '', error: err.message });
+        console.warn(`[${index + 1}/${existingClubEvents.length}] Reconciliation failed for ${eventId}: ${err.message.split('\n')[0]}`);
+      }
+    }
 
     for (const [index, feedEvent] of selected.entries()) {
       const sourceUrl = eventPageUrl(feedEvent.id);
@@ -1016,7 +1070,7 @@ async function main() {
     'utf8'
   );
 
-  if (!uploaded.length) throw new Error('No sampled events were successfully parsed/uploaded.');
+  if (selected.length && !uploaded.length) throw new Error('No sampled events were successfully parsed/uploaded.');
 
   const archivedBrooklynMatches = await archiveBrooklynEventsMatchingClubTitles(existingEvents, uploaded);
 

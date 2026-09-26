@@ -1,16 +1,18 @@
 # Automated CampusGroups Scrape
 
-This run reads the public CampusGroups mobile calendar JSON feed, ignores past
-events, selects the next 15 upcoming events, logs into Brooklyn College WebCentral,
-opens each event page, and uploads enriched event docs to Firebase.
+This run reads the public CampusGroups mobile calendar JSON feed, selects the
+next 15 upcoming events for new imports, and logs into Brooklyn College
+WebCentral. It also revisits every existing CampusGroups event document in
+Firebase, including past events, to sync its location. An existing event is
+removed from Firebase only when its CampusGroups page returns 404/410 or
+explicitly reports that the event was deleted or is no longer available.
 Flyers are compressed to JPEG, and flyer icons use the same importer contract:
 a tiny 84x84 square PNG at `events/<eventId>/flyerIcon.png`.
 Flyer bytes are fetched through Playwright's request API before canvas resizing
 so browser CORS rules cannot block icon generation.
 
-Past events should not be archived or deleted just because they are removed from
-the CampusGroups JSON feed later. The feed is used as an import source, not as a
-delete authority.
+The feed is used as an import source, not as a delete authority. Failed or
+unparseable event pages leave Firebase unchanged.
 
 ## GitHub Setup
 
