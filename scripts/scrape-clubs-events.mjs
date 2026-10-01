@@ -19,7 +19,7 @@ const DEFAULT_LOGIN_URL = 'https://www.clubs.brooklyn.cuny.edu/webapp/auth/login
 const DEFAULT_EVENTS_URL = 'https://www.clubs.brooklyn.cuny.edu/events';
 const AUTH_STATE_PATH = path.resolve('.auth', 'webcentral-storage-state.json');
 const ARTIFACTS_DIR = path.resolve('artifacts');
-const MAX_ACTION_EVENTS = 15;
+const MAX_ACTION_EVENTS = 20;
 const FULL_FLYER_MAX_PX = 1100;
 const FULL_FLYER_QUALITY = 0.68;
 const ICON_SIZE_PX = 84;
@@ -77,6 +77,30 @@ function hasNativeFlyerUrl(value) {
 
 function eventPageUrl(id) {
   return eventUrlTemplate.replace('{id}', encodeURIComponent(String(id)));
+}
+
+function campusGroupsIdFromUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    return url.searchParams.get('id') || url.searchParams.get('event_id') || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function feedEventId(evt) {
+  return normalize(evt?.id || campusGroupsIdFromUrl(evt?.rsvpLinkCalendar || evt?.eventRedirectUrl || ''));
+}
+
+function eventSourceUrl(evt) {
+  const rawUrl = normalize(evt?.rsvpLinkCalendar || evt?.eventRedirectUrl);
+  if (rawUrl) {
+    const url = absoluteUrl(rawUrl, 'https://www.clubs.brooklyn.cuny.edu/');
+    try {
+      if (/clubs\.brooklyn\.cuny\.edu$/i.test(new URL(url).hostname)) return url;
+    } catch (_) {}
+  }
+  return eventPageUrl(feedEventId(evt));
 }
 
 function isExternalUrl(value) {
@@ -160,7 +184,7 @@ async function requestJson(url, options = {}) {
 async function fetchMobileFeedEvents() {
   const data = await requestJson(feedUrl);
   const events = Array.isArray(data.events) ? data.events : [];
-  return events.filter(evt => evt && evt.id && evt.isDisplay !== false && evt.isHideFromCalendar !== true && isUpcomingEvent(evt));
+  return events.map(evt => ({ ...evt, id: feedEventId(evt) }));
 }
 
 function todayInNewYork() {
@@ -174,29 +198,6 @@ function todayInNewYork() {
   return `${value('year')}-${value('month')}-${value('day')}`;
 }
 
-function isUpcomingStoredEvent(data = {}) {
-  const rawDate = normalize(
-    data.endDate || data.eventEndDate || data.eventEndDateStr ||
-    data.date || data.eventDate || data.eventDateStr || data.startDate
-  );
-  if (!rawDate) return false;
-
-  let eventDay = rawDate.match(/^\d{4}-\d{2}-\d{2}/)?.[0] || '';
-  if (!eventDay) {
-    const timestamp = Date.parse(rawDate);
-    if (!Number.isFinite(timestamp)) return false;
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'America/New_York',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).formatToParts(new Date(timestamp));
-    const part = type => parts.find(item => item.type === type)?.value || '';
-    eventDay = `${part('year')}-${part('month')}-${part('day')}`;
-  }
-  return eventDay >= todayInNewYork();
-}
-
 function addMonths(date, months) {
   const copy = new Date(date);
   copy.setUTCMonth(copy.getUTCMonth() + months);
@@ -207,13 +208,26 @@ function maxPostingDate() {
   return addMonths(new Date(`${todayInNewYork()}T00:00:00.000Z`), 2).toISOString().slice(0, 10);
 }
 
+function minPostingDate() {
+  const copy = new Date(`${todayInNewYork()}T00:00:00.000Z`);
+  copy.setUTCDate(copy.getUTCDate() - 7);
+  return copy.toISOString().slice(0, 10);
+}
+
 function isUpcomingEvent(evt) {
-  const today = todayInNewYork();
+  const minDate = minPostingDate();
   const maxDate = maxPostingDate();
-  const endDate = normalize(evt.eventEndDateStr || evt.eventDateStr);
   const startDate = normalize(evt.eventDateStr);
-  if (startDate && startDate > maxDate) return false;
-  return Boolean((endDate && endDate >= today) || (!endDate && startDate && startDate >= today));
+  if (!startDate || startDate < minDate || startDate > maxDate) return false;
+  return true;
+}
+
+function feedEventSkipReason(evt) {
+  if (!evt?.id) return 'missing event id';
+  if (!isUpcomingEvent(evt)) return 'outside upcoming date window or missing date';
+  if (evt.isDisplay === false) return 'isDisplay=false';
+  if (evt.isHideFromCalendar === true) return 'isHideFromCalendar=true';
+  return '';
 }
 
 function feedEventSortKey(evt) {
@@ -225,13 +239,26 @@ function feedEventSortKey(evt) {
   ].join('|');
 }
 
-async function isLoggedInEventPage(page) {
+async function isEventDetailPage(page) {
   return page.evaluate(() => Boolean(
     document.querySelector('.rsvp__event-name') ||
     document.querySelector('#event_main_card') ||
-    document.querySelector('#event_details') ||
+    document.querySelector('#event_details')
+  )).catch(() => false);
+}
+
+async function isEventsListingPage(page) {
+  return page.evaluate(() => Boolean(
     document.querySelector('li[id^="event_"]') ||
-    document.querySelector('a[href*="/rsvp_boot"][href*="id="]')
+    /events calendar/i.test(document.title || '')
+  )).catch(() => false);
+}
+
+async function isCalendarPage(page) {
+  return page.evaluate(() => Boolean(
+    document.querySelector('.calEvent[eid]') ||
+    document.querySelector('[id^="mon-"], [id^="tue-"], [id^="wed-"], [id^="thu-"], [id^="fri-"], [id^="sat-"], [id^="sun-"]') ||
+    /events calendar/i.test(document.title || '')
   )).catch(() => false);
 }
 
@@ -323,8 +350,8 @@ async function writeLoginDebug(page, reason) {
   console.log(`Wrote sanitized login debug to ${outputPath}`);
 }
 
-async function loginIfNeeded(page, returnUrl = eventPageUrl('374921')) {
-  if (await isLoggedInEventPage(page)) return;
+async function loginIfNeeded(page, returnUrl = eventPageUrl('374921'), pageReady = isEventDetailPage) {
+  if (await pageReady(page)) return;
 
   if (!username || !password) {
     throw new Error('Set BC_WEBCENTRAL_USERNAME and BC_WEBCENTRAL_PASSWORD before running.');
@@ -360,7 +387,7 @@ async function loginIfNeeded(page, returnUrl = eventPageUrl('374921')) {
     ]);
 
     if (!usernameInput && !passwordInput) {
-      if (await isLoggedInEventPage(page)) return;
+      if (await pageReady(page)) return;
       if (!(await clickOptionalLoginLink(page))) {
         await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
       }
@@ -416,10 +443,10 @@ async function loginIfNeeded(page, returnUrl = eventPageUrl('374921')) {
     if (/\/cas\/brooklyn|\/webapp\/auth\/login/i.test(page.url())) {
       await page.waitForURL(/clubs\.brooklyn\.cuny\.edu/i, { timeout: 15000 }).catch(() => {});
     }
-    if (await isLoggedInEventPage(page)) return;
+    if (await pageReady(page)) return;
 
     await page.goto(returnUrl, { waitUntil: 'networkidle', timeout: 45000 }).catch(() => {});
-    if (await isLoggedInEventPage(page)) return;
+    if (await pageReady(page)) return;
   }
 
   const title = await page.title().catch(() => '');
@@ -474,6 +501,197 @@ async function collectListingFlyers(page) {
   }).catch(() => []);
 }
 
+async function collectVisibleCalendarEvents(page) {
+  return page.evaluate(() => {
+    const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const dateRootFor = element => {
+      let current = element;
+      while (current && current !== document.body) {
+        if (/^(mon|tue|wed|thu|fri|sat|sun)-\d{2}-\d{2}-\d{4}$/i.test(current.id || '')) return current;
+        current = current.parentElement;
+      }
+      return null;
+    };
+    const visible = element => {
+      if (!element || !element.getClientRects().length) return false;
+      for (let current = element; current && current !== document.body; current = current.parentElement) {
+        const style = getComputedStyle(current);
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+      }
+      return true;
+    };
+    const out = [];
+    for (const item of document.querySelectorAll('.calEvent[eid]')) {
+      if (!visible(item)) continue;
+      const link = item.querySelector('.EventTitlelink a[href], a.TitleLink[href], a[href*="rsvp"][href*="id="]');
+      const day = dateRootFor(item);
+      const dayMatch = String(day?.id || '').match(/^(?:mon|tue|wed|thu|fri|sat|sun)-(\d{2})-(\d{2})-(\d{4})$/i);
+      const itemId = normalize(item.getAttribute('eid'));
+      const href = link?.href || '';
+      let id = itemId;
+      try {
+        const urlId = new URL(href).searchParams.get('id') || new URL(href).searchParams.get('event_id');
+        if (!id || (urlId && id !== urlId)) id = urlId || id;
+      } catch (_) {}
+      if (!id || !link) continue;
+      const date = dayMatch ? `${dayMatch[3]}-${dayMatch[1]}-${dayMatch[2]}` : '';
+      const groupName = clean(item.querySelector('.ClubName')?.textContent || '');
+      const time = clean(item.querySelector('.EventTime')?.textContent || '');
+      out.push({
+        id,
+        title: clean(link.textContent),
+        eventDateStr: date,
+        eventEndDateStr: date,
+        eventDate: date,
+        startTime: time,
+        groupName,
+        rsvpLinkCalendar: href,
+        isDisplay: true,
+        isHideFromCalendar: false,
+        _calendarVisible: true
+      });
+    }
+    return out;
+  }).catch(() => []);
+}
+
+async function calendarDaySignature(page) {
+  return page.evaluate(() => Array.from(document.querySelectorAll('[id]'))
+    .map(element => element.id)
+    .filter(id => /^(mon|tue|wed|thu|fri|sat|sun)-\d{2}-\d{2}-\d{4}$/i.test(id))
+    .join('|')).catch(() => '');
+}
+
+async function clickNextCalendarPeriod(page) {
+  return page.evaluate(() => {
+    const visible = element => Boolean(element?.getClientRects().length) && getComputedStyle(element).visibility !== 'hidden';
+    const selectors = [
+      '.fc-next-button',
+      'button[aria-label*="next week" i]',
+      'button[title*="next week" i]',
+      'a[aria-label*="next week" i]',
+      'button[aria-label*="next" i]',
+      'a[aria-label*="next" i]',
+      'button[title*="next" i]',
+      'a[title*="next" i]'
+    ];
+    for (const selector of selectors) {
+      const element = Array.from(document.querySelectorAll(selector)).find(visible);
+      if (element && !element.disabled) {
+        element.click();
+        return true;
+      }
+    }
+    const labeled = Array.from(document.querySelectorAll('button,a,[role="button"]')).find(element => {
+      if (!visible(element) || element.disabled) return false;
+      const label = [element.getAttribute('aria-label'), element.getAttribute('title'), element.textContent]
+        .map(value => String(value || '').trim()).join(' ');
+      return /^(?:next|next week|next month|›|»|>)+$/i.test(label);
+    });
+    if (!labeled) return false;
+    labeled.click();
+    return true;
+  }).catch(() => false);
+}
+
+async function collectCalendarEvents(page) {
+  const collected = new Map();
+  const maxDate = maxPostingDate();
+  const maxCalendarPeriods = 12;
+  let periodsScanned = 0;
+  let complete = false;
+
+  while (periodsScanned < maxCalendarPeriods) {
+    const events = await collectVisibleCalendarEvents(page);
+    for (const event of events) {
+      if (!event.id || !event.eventDateStr || event.eventDateStr > maxDate) continue;
+      const prior = collected.get(event.id);
+      if (!prior || `${event.eventDateStr}|${event.startTime}` < `${prior.eventDateStr}|${prior.startTime}`) {
+        collected.set(event.id, event);
+      }
+    }
+    periodsScanned++;
+
+    const dayIds = (await calendarDaySignature(page)).split('|').filter(Boolean);
+    if (!dayIds.length) break;
+    const latestDay = dayIds.map(id => {
+      const match = id.match(/^(?:mon|tue|wed|thu|fri|sat|sun)-(\d{2})-(\d{2})-(\d{4})$/i);
+      return match ? `${match[3]}-${match[1]}-${match[2]}` : '';
+    }).filter(Boolean).sort().at(-1) || '';
+    if (latestDay >= maxDate) {
+      complete = true;
+      break;
+    }
+
+    if (periodsScanned >= maxCalendarPeriods) break;
+    const before = dayIds.join('|');
+    if (!(await clickNextCalendarPeriod(page))) break;
+    await page.waitForFunction(previous => {
+      const current = Array.from(document.querySelectorAll('[id]'))
+        .map(element => element.id)
+        .filter(id => /^(mon|tue|wed|thu|fri|sat|sun)-\d{2}-\d{2}-\d{4}$/i.test(id))
+        .join('|');
+      return current && current !== previous;
+    }, before, { timeout: 8000 }).catch(() => {});
+    const after = await calendarDaySignature(page);
+    if (!after || after === before) {
+      navigationAvailable = false;
+      break;
+    }
+  }
+
+  return { events: [...collected.values()], periodsScanned, complete };
+}
+
+function combineFeedAndCalendarEvents(feedEvents, calendarEvents) {
+  const calendarById = new Map(calendarEvents.map(event => [String(event.id), event]));
+  const feedIds = new Set();
+  const events = [];
+  const skipped = [];
+  const skipCounts = {};
+  const recordSkip = (id, title, reason) => {
+    skipCounts[reason] = (skipCounts[reason] || 0) + 1;
+    if (reason !== 'outside upcoming date window or missing date' && reason !== 'calendar entry outside upcoming date window') {
+      skipped.push({ id, title: title || '', reason });
+    }
+  };
+
+  for (const feedEvent of feedEvents) {
+    const id = feedEventId(feedEvent);
+    if (!id) {
+      recordSkip('', feedEvent.title, 'missing event id in JSON and URL');
+      continue;
+    }
+    feedIds.add(id);
+    const calendarEvent = calendarById.get(id);
+    const feedSkipReason = feedEventSkipReason({ ...feedEvent, id });
+    let merged = calendarEvent
+      ? { ...calendarEvent, ...feedEvent, id, eventDateStr: feedEvent.eventDateStr || calendarEvent.eventDateStr, rsvpLinkCalendar: feedEvent.rsvpLinkCalendar || calendarEvent.rsvpLinkCalendar, _calendarVisible: true, _calendarFallback: Boolean(feedSkipReason) }
+      : { ...feedEvent, id };
+    if (calendarEvent && !isUpcomingEvent(feedEvent) && isUpcomingEvent(calendarEvent)) {
+      merged = { ...merged, eventDateStr: calendarEvent.eventDateStr, eventEndDateStr: calendarEvent.eventEndDateStr };
+    }
+    const skipReason = calendarEvent ? (!isUpcomingEvent(merged) ? 'outside upcoming date window' : '') : feedEventSkipReason(merged);
+    if (skipReason) {
+      recordSkip(id, merged.title, skipReason);
+      continue;
+    }
+    events.push(merged);
+  }
+
+  for (const calendarEvent of calendarEvents) {
+    const id = String(calendarEvent.id);
+    if (feedIds.has(id)) continue;
+    if (!isUpcomingEvent(calendarEvent)) {
+      recordSkip(id, calendarEvent.title, 'calendar entry outside upcoming date window');
+      continue;
+    }
+    events.push({ ...calendarEvent, _calendarFallback: true });
+  }
+
+  return { events, skipped, skipCounts };
+}
+
 function dateFromRaw(rawDate) {
   const text = decodeEntities(rawDate);
   const match = text.match(/(?:\w+,\s*)?(\w+)\s*(\d{1,2}),\s*(\d{4})/);
@@ -500,7 +718,7 @@ function roomFromFeed(evt) {
 
 function mergeEvent(feedEvent, pageEvent = {}, options = {}) {
   const cgId = String(feedEvent.id);
-  const sourceUrl = options.sourceUrl || eventPageUrl(cgId);
+  const sourceUrl = options.sourceUrl || eventSourceUrl(feedEvent) || eventPageUrl(cgId);
   const date = feedEvent.eventDateStr || dateFromRaw(pageEvent.rawDate || feedEvent.eventDate);
   const time = decodeEntities(pageEvent.time || [feedEvent.startTime, feedEvent.endTime].filter(Boolean).join(' - '));
   const flyerUrl = absoluteUrl(pageEvent.flyerUrl || options.flyerUrl || feedEvent.eventFlyer || '', sourceUrl);
@@ -914,7 +1132,7 @@ async function uploadFlyerIfAvailable(page, event) {
 }
 
 async function uploadEvent(event) {
-  const { _fallbackLogo, ...cleanEvent } = event;
+  const { _fallbackLogo, _calendarVisible, _calendarFallback, ...cleanEvent } = event;
   const docData = {
     ...cleanEvent,
     createdAt: { __serverTimestamp: true }
@@ -964,7 +1182,7 @@ async function archiveBrooklynEventsMatchingClubTitles(eventDocs, clubEvents) {
 
 async function main() {
   console.log(`Fetching mobile calendar JSON from ${feedUrl}`);
-  const [feedEvents, existingEvents, clubDocs, orgDocs] = await Promise.all([
+  const [rawFeedEvents, existingEvents, clubDocs, orgDocs] = await Promise.all([
     fetchMobileFeedEvents(),
     fetchCollection('events'),
     fetchCollection('clubs'),
@@ -972,49 +1190,84 @@ async function main() {
   ]);
   const orgLookup = buildOrgLookup(clubDocs, orgDocs);
   const existingIds = buildExistingIdSet(existingEvents);
-  const existingClubEvents = existingEvents.filter(doc =>
-    normalize(doc.data.eventId || doc.id).startsWith('c_') && isUpcomingStoredEvent(doc.data)
-  );
-  const skippedPastClubEvents = existingEvents.filter(doc =>
-    normalize(doc.data.eventId || doc.id).startsWith('c_') && !isUpcomingStoredEvent(doc.data)
-  ).length;
-  console.log(`Feed returned ${feedEvents.length} upcoming displayable events.`);
-  console.log(`Reconciling ${existingClubEvents.length} upcoming CampusGroups events; skipped ${skippedPastClubEvents} past or undated events.`);
-  if (!feedEvents.length && !existingClubEvents.length) throw new Error('No upcoming feed events or existing CampusGroups events found.');
-
-  const selected = [...feedEvents]
-    .filter(evt => !existingIds.has(`c_${evt.id}`))
-    .sort((a, b) => feedEventSortKey(a).localeCompare(feedEventSortKey(b)))
-    .slice(0, limit);
-  console.log(`Selected next ${selected.length} new events. Existing c_ events are ignored. Hard cap is ${MAX_ACTION_EVENTS}.`);
-  if (!selected.length) console.log('No new club events to upload; continuing with existing-event reconciliation.');
+  const existingClubEvents = existingEvents.filter(doc => normalize(doc.data.eventId || doc.id).startsWith('c_'));
+  console.log(`Mobile JSON returned ${rawFeedEvents.length} raw events; filtering after checking the visible calendar.`);
+  console.log(`Reconciling ${existingClubEvents.length} existing CampusGroups event documents, including past events.`);
 
   const browser = await chromium.launch({ headless: !headed });
   const context = await browser.newContext();
   const page = await context.newPage();
   const uploaded = [];
   const failed = [];
+  const selected = [];
+  let alreadyInFirebase = [];
+  let omittedByLimit = [];
+  let calendarEvents = [];
+  let combined = { events: [], skipped: [], skipCounts: {} };
+  let calendarPeriodsScanned = 0;
+  let calendarScanComplete = false;
 
   try {
     console.log(`Opening ${loginUrl}`);
     await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await loginIfNeeded(page, eventsUrl);
+    await loginIfNeeded(page, eventsUrl, isEventsListingPage);
     await fs.mkdir(path.dirname(AUTH_STATE_PATH), { recursive: true });
     await context.storageState({ path: AUTH_STATE_PATH });
     console.log(`Saved browser session state to ${AUTH_STATE_PATH}`);
 
     await page.goto(eventsUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-    await loginIfNeeded(page, eventsUrl);
+    await loginIfNeeded(page, eventsUrl, isEventsListingPage);
     const listingFlyers = new Map(await collectListingFlyers(page));
     console.log(`Cached ${listingFlyers.size} flyer URLs from ${eventsUrl}.`);
+
+    const calendarUrl = 'https://www.clubs.brooklyn.cuny.edu/calendar#week';
+    await page.goto(calendarUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await loginIfNeeded(page, calendarUrl, isCalendarPage);
+    const calendarScan = await collectCalendarEvents(page);
+    calendarEvents = calendarScan.events;
+    calendarPeriodsScanned = calendarScan.periodsScanned;
+    calendarScanComplete = calendarScan.complete;
+    combined = combineFeedAndCalendarEvents(rawFeedEvents, calendarEvents);
+    const jsonOnlyEligible = rawFeedEvents.filter(evt => !feedEventSkipReason(evt)).length;
+    const calendarOverrides = calendarEvents.filter(calendarEvent => {
+      const feedEvent = rawFeedEvents.find(evt => feedEventId(evt) === String(calendarEvent.id));
+      return feedEvent && (feedEvent.isDisplay === false || feedEvent.isHideFromCalendar === true);
+    }).length;
+    console.log(`Visible calendar check found ${calendarEvents.length} upcoming event listings across ${calendarPeriodsScanned} calendar periods.`);
+    if (!calendarScanComplete) console.warn('Calendar scan did not reach the end of the upcoming date window; check the calendar navigation before relying on this run for events beyond the displayed period.');
+    console.log(`JSON-only filter would accept ${jsonOnlyEligible}; calendar visibility restored ${calendarOverrides} entries rejected by JSON visibility flags.`);
+    console.log(`Combined sources produced ${combined.events.length} upcoming candidates; ${combined.skipped.length} JSON/calendar candidates were filtered.`);
+    for (const [reason, count] of Object.entries(combined.skipCounts)) {
+      console.log(`Filter count: ${count} (${reason}).`);
+    }
+    for (const item of combined.skipped) {
+      console.log(`Skipped ${item.id || '(no id)'} ${item.title ? `"${item.title}" ` : ''}(${item.reason}).`);
+    }
+    alreadyInFirebase = combined.events.filter(evt => existingIds.has(`c_${evt.id}`));
+    const newCandidates = combined.events
+      .filter(evt => !existingIds.has(`c_${evt.id}`))
+      .sort((a, b) => Number(Boolean(b._calendarFallback)) - Number(Boolean(a._calendarFallback)) || feedEventSortKey(a).localeCompare(feedEventSortKey(b)));
+    const selection = newCandidates.slice(0, limit);
+    omittedByLimit = newCandidates.slice(limit);
+    selected.push(...selection);
+    console.log(`Already in Firebase: ${alreadyInFirebase.length}; selected ${selected.length} new events; deferred ${omittedByLimit.length} by the per-run limit of ${limit}.`);
+    for (const item of omittedByLimit) {
+      console.log(`Deferred ${item.id} "${item.title || ''}" (per-run limit).`);
+    }
+    if (!selected.length) console.log('No new club events to upload; continuing with existing-event reconciliation.');
+    if (!combined.events.length && !existingClubEvents.length) throw new Error('No upcoming JSON/calendar events or existing CampusGroups events found.');
 
     for (const [index, doc] of existingClubEvents.entries()) {
       const eventId = normalize(doc.data.eventId || doc.id);
       const cgId = eventId.replace(/^c_/, '');
-      const sourceUrl = eventPageUrl(cgId);
+      const storedLink = Array.isArray(doc.data.links)
+        ? doc.data.links.map(link => normalize(link?.url)).find(Boolean)
+        : '';
+      const sourceUrl = eventSourceUrl({ id: cgId, rsvpLinkCalendar: storedLink });
       try {
         const response = await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-        if (!isExternalUrl(page.url())) await loginIfNeeded(page, sourceUrl);
+        if (!isExternalUrl(page.url())) await loginIfNeeded(page, sourceUrl, isEventDetailPage);
         if ([404, 410].includes(response?.status()) || await isDeletedEventPage(page)) {
           if (dryRun) console.log(`[${index + 1}/${existingClubEvents.length}] DRY RUN delete missing CampusGroups event ${eventId}`);
           else {
@@ -1044,12 +1297,12 @@ async function main() {
     }
 
     for (const [index, feedEvent] of selected.entries()) {
-      const sourceUrl = eventPageUrl(feedEvent.id);
+      const sourceUrl = eventSourceUrl(feedEvent);
       try {
         await page.goto(sourceUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
         const finalUrl = page.url();
         const redirectedExternally = isExternalUrl(finalUrl);
-        if (!redirectedExternally) await loginIfNeeded(page, sourceUrl);
+        if (!redirectedExternally) await loginIfNeeded(page, sourceUrl, isEventDetailPage);
         const pageEvent = redirectedExternally ? {} : await parseEventPage(page, sourceUrl);
         const event = mergeEvent(feedEvent, pageEvent, {
           flyerUrl: listingFlyers.get(String(feedEvent.id)) || '',
@@ -1094,7 +1347,22 @@ async function main() {
   await fs.mkdir(ARTIFACTS_DIR, { recursive: true });
   await fs.writeFile(
     path.join(ARTIFACTS_DIR, 'scrape-summary.json'),
-    JSON.stringify({ dryRun, selected: selected.length, uploaded: uploaded.length, failed }, null, 2) + '\n',
+    JSON.stringify({
+      dryRun,
+      jsonRaw: rawFeedEvents.length,
+      calendarVisible: calendarEvents.length,
+      calendarPeriodsScanned,
+      calendarScanComplete,
+      combinedCandidates: combined.events.length,
+      filteredCandidates: combined.skipped,
+      filteredCounts: combined.skipCounts,
+      calendarFallbackIds: combined.events.filter(event => event._calendarFallback).map(event => event.id),
+      alreadyInFirebase: alreadyInFirebase.map(event => event.id),
+      deferredByLimit: omittedByLimit.map(event => ({ id: event.id, title: event.title || '' })),
+      selected: selected.length,
+      uploaded: uploaded.length,
+      failed
+    }, null, 2) + '\n',
     'utf8'
   );
 
@@ -1103,7 +1371,7 @@ async function main() {
   const archivedBrooklynMatches = await archiveBrooklynEventsMatchingClubTitles(existingEvents, uploaded);
 
   console.log('');
-  console.log(`CONFIRMED: selected ${selected.length} next events, ${dryRun ? 'parsed' : 'uploaded'} ${uploaded.length}, failed ${failed.length}. Exiting before scraping anything else.`);
+  console.log(`CONFIRMED: selected ${selected.length} events (limit ${limit}), ${dryRun ? 'parsed' : 'uploaded'} ${uploaded.length}, failed ${failed.length}. Exiting before scraping anything else.`);
   if (archivedBrooklynMatches.length) {
     console.log(`${dryRun ? 'Would archive' : 'Archived'} ${archivedBrooklynMatches.length} Brooklyn.edu events with matching club-event titles.`);
   }

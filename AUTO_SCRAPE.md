@@ -1,12 +1,12 @@
 # Automated CampusGroups Scrape
 
-This run reads the public CampusGroups mobile calendar JSON feed, selects the
-next 15 upcoming events for new imports, and logs into Brooklyn College
-WebCentral. It also revisits upcoming existing CampusGroups event documents in
-Firebase to sync their locations. Past or undated events are skipped. An
-upcoming event is removed from Firebase only when its CampusGroups page returns
-404/410 or explicitly reports that the event was deleted or is no longer
-available.
+This run reads the public CampusGroups mobile calendar JSON feed, selects up to
+20 eligible events dated from the previous seven days through the upcoming
+two-month window for new imports, and logs into Brooklyn College
+WebCentral. It also revisits every existing CampusGroups event document in
+Firebase, including past events, to sync its location. An existing event is
+removed from Firebase only when its CampusGroups page explicitly reports that
+the event was deleted or is no longer available.
 Flyers are compressed to JPEG, and flyer icons use the same importer contract:
 a tiny 84x84 square PNG at `events/<eventId>/flyerIcon.png`.
 Flyer bytes are fetched through Playwright's request API before canvas resizing
@@ -101,7 +101,7 @@ npm run scrape:biology -- --dry-run
 Optional:
 
 ```powershell
-npm run scrape:clubs -- --limit=15 --dry-run
+npm run scrape:clubs -- --limit=20 --dry-run
 ```
 
 During each run, Playwright writes the logged-in browser session to
