@@ -37,7 +37,11 @@ function normalize(value) {
 }
 
 function decodeEntities(value) {
-  return normalize(value)
+  return normalize(decodeHtmlEntities(value));
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
     .replace(/&#038;|&amp;/gi, '&')
     .replace(/&#8217;|&rsquo;/gi, "'")
     .replace(/&#8220;|&ldquo;/gi, '"')
@@ -49,7 +53,15 @@ function decodeEntities(value) {
 }
 
 function stripHtml(value) {
-  return decodeEntities(String(value || '').replace(/<[^>]*>/g, ' '));
+  return decodeHtmlEntities(String(value || '')
+    .replace(/<\s*br\s*\/?\s*>/gi, '\n')
+    .replace(/<\s*\/\s*(?:p|div|li|h[1-6]|blockquote)\s*>/gi, '\n')
+    .replace(/<\s*(?:p|div|li|h[1-6]|blockquote)\b[^>]*>/gi, '\n')
+    .replace(/<[^>]*>/g, ' '))
+    .split(/\r?\n/)
+    .map(line => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\n');
 }
 
 function firstArray(value) {
