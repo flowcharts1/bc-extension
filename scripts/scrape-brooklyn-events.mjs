@@ -405,6 +405,23 @@ function buildOrgMap(orgDocs) {
   return new Map(orgDocs.map(doc => [doc.id, doc.data]));
 }
 
+function findOrgByName(orgMap, name) {
+  const target = normalize(name).toLowerCase();
+  for (const [id, data] of orgMap) {
+    const names = [data.name, data.clubName, data.orgName, id];
+    if (names.some(value => normalize(value).toLowerCase() === target)) return data;
+  }
+  return {};
+}
+
+function orgLogo(data) {
+  return data.icon || data.logo || data.featuredImage || data.image || data.photo || '';
+}
+
+function orgLogoPath(data) {
+  return data.iconPath || data.logoPath || data.featuredImagePath || data.imagePath || data.photoPath || '';
+}
+
 function buildClubTitleSet(eventDocs) {
   const titles = new Set();
   for (const doc of eventDocs) {
@@ -425,10 +442,12 @@ function buildExistingIdSet(eventDocs) {
 async function mergeEvent(evt, orgMap, clubTitleSet) {
   const org = primaryOrganizer(evt);
   const orgData = orgMap.get(org.orgId) || {};
+  const admissionsOrgData = findOrgByName(orgMap, 'Admissions, Undergraduate');
   const eventId = `b_${evt.id}`;
   const eventImageUrl = imageUrl(evt);
-  const fallbackIcon = orgData.icon || '';
-  const fallbackIconPath = orgData.iconPath || '';
+  const selectedLogoData = (orgLogo(orgData) || orgLogoPath(orgData)) ? orgData : admissionsOrgData;
+  const fallbackIcon = orgLogo(selectedLogoData);
+  const fallbackIconPath = orgLogoPath(selectedLogoData);
   const link = await findRegisterLink(evt);
   const title = eventTitle(evt);
   const archived = clubTitleSet.has(normalizeTitleForMatch(title));
